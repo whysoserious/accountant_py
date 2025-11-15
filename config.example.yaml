@@ -1,0 +1,114 @@
+# Accountant Configuration File
+# Copy this file to config.yaml and fill in your credentials
+
+# Anthropic API configuration
+anthropic:
+  api_key: "your_anthropic_api_key_here"
+
+# Your NIP (Polish tax identification number)
+nip: "1234567890"
+
+# Email search configuration
+search:
+  # Number of days to look back for emails (default: 45)
+  days_back: 45
+
+  # Keywords to search for in email subject and body
+  keywords:
+    - invoice
+    - faktura
+    - dowod        # Alternative to "dowód zakupu" to avoid encoding issues
+    - potwierdzenie
+    - dokument
+    - receipt
+    - paragon
+    - rachunek
+
+# Mailbox configuration
+# Each mailbox has a name (used in --mailboxes argument) and connection details
+mailboxes:
+  gmail_personal:
+    host: "imap.gmail.com"
+    port: 993
+    username: "your_email@gmail.com"
+    password: "your_gmail_app_password"
+    use_ssl: true
+
+  # Example of another mailbox configuration
+  other_mailbox:
+    host: "mail.example.com"
+    port: 993
+    username: "user@example.com"
+    password: "your_password"
+    use_ssl: true
+
+# Output configuration
+output:
+  # Main directory for downloaded invoices
+  main_directory: "./invoices"
+
+  # Directory for attachments without confirmed NIP
+  uncertain_directory: "./invoices/uncertain"
+
+  # Log file for download operations
+  log_file: "./invoice_download.log"
+
+# Optional: Override default prompts
+prompts:
+  # Prompt for checking if attachment contains your NIP
+  nip_check: |
+    Analyze this document (invoice, receipt, or proof of purchase).
+    Check if it contains the following NIP (Polish tax ID): {nip}
+
+    The NIP might be formatted as:
+    - Plain number: 1234567890
+    - With dashes: 123-456-78-90
+    - With spaces: 123 456 78 90
+    - With country identification prefix e.g. PL<numbers>
+    - Labeled as "NIP:", "NIP nabywcy:", "Tax ID:", etc.
+
+    Respond with ONLY "YES" if the document contains this specific NIP, or "NO" if it doesn't.
+    If you cannot read the document clearly, respond with "NO".
+
+  # Prompt for categorizing and extracting invoice information (used in rename command)
+  categorization: |
+    Extract the following information from this invoice:
+
+    Please extract:
+    1. Invoice date (in format YYYY-MM-DD)
+    2. Company name
+    3. Invoice number
+    4. Brief description of what the invoice is for
+
+    For the description, be concise and use categories like these examples:
+    - abonament na oprogramowanie
+    - akcesoria do druku 3d
+    - domena internetowa
+    - doradztwo IT
+    - filtry do wody
+    - herbata do biura
+    - karta pamięci
+    - licencja na oprogramowanie
+    - materiały do druku
+    - narzędzia
+    - olej silnikowy
+    - paliwo
+    - remont biura
+    - serwis samochodu
+    - słuchawki
+    - środki czystości
+    - usługi księgowe
+    - usługi telekomunikacyjne
+    - zegarek elektroniczny
+
+    Respond in this exact JSON format:
+    {
+      "date": "YYYY-MM-DD",
+      "company": "Company Name",
+      "invoice_number": "INV12345",
+      "description": "Brief description"
+    }
+
+    If the file is not an invoice (e.g. bank statement) then please rename it as "Bank statement" or other relevant filename.
+
+    If you can't find some information, use "Unknown" as the value.
