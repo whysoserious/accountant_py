@@ -3,3 +3,31 @@ __pycache__/i
 __pycache__/
 test/
 **/.claude/settings.local.json
+
+# Configuration with sensitive data
+config.yaml
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Python cache
+*.py[cod]
+*$py.class
+*.so
+
+# Output directories and logs
+invoices/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
