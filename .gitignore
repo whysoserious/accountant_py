@@ -6,6 +6,7 @@ test/
 
 # Configuration with sensitive data
 config.yaml
+config.*.yaml
 
 # Virtual environment
 venv/
