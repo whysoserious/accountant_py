@@ -3,4 +3,3 @@ anthropic
 pdf2image
 Pillow
 PyYAML
-requests

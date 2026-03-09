@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Configuration parser for accountant script."""
-
 import yaml
 import os
 from typing import Dict, List, Optional, Any
@@ -45,20 +44,6 @@ class PromptsConfig:
 
 
 @dataclass
-class QNAPConfig:
-    """Configuration for QNAP NAS connection."""
-
-    host: str
-    port: int
-    username: str
-    password: str
-    upload_path: str
-    use_ssl: bool = True
-    verify_ssl: bool = False
-    organize_by_month: bool = True
-
-
-@dataclass
 class Config:
     """Main configuration class."""
 
@@ -68,7 +53,6 @@ class Config:
     mailboxes: Dict[str, MailboxConfig]
     output: OutputConfig
     prompts: PromptsConfig
-    qnap: Optional[QNAPConfig] = None
 
 
 def load_config(config_path: str) -> Config:
@@ -209,28 +193,6 @@ If you can't find some information, use "Unknown" as the value."""
         categorization=prompts_data.get("categorization", default_categorization),
     )
 
-    # Parse QNAP config (optional)
-    qnap = None
-    qnap_data = config_data.get("qnap")
-    if qnap_data:
-        required_qnap_keys = ["host", "port", "username", "password", "upload_path"]
-        missing_qnap_keys = [key for key in required_qnap_keys if key not in qnap_data]
-        if missing_qnap_keys:
-            raise ValueError(
-                f"Missing keys in 'qnap' section: {', '.join(missing_qnap_keys)}"
-            )
-
-        qnap = QNAPConfig(
-            host=qnap_data["host"],
-            port=int(qnap_data["port"]),
-            username=qnap_data["username"],
-            password=qnap_data["password"],
-            upload_path=qnap_data["upload_path"],
-            use_ssl=qnap_data.get("use_ssl", True),
-            verify_ssl=qnap_data.get("verify_ssl", False),
-            organize_by_month=qnap_data.get("organize_by_month", True),
-        )
-
     return Config(
         api_key=api_key,
         nip=nip,
@@ -238,7 +200,6 @@ If you can't find some information, use "Unknown" as the value."""
         mailboxes=mailboxes,
         output=output,
         prompts=prompts,
-        qnap=qnap,
     )
 
 
