@@ -53,6 +53,20 @@ output:
   # Log file for download operations
   log_file: "./invoice_download.log"
 
+# QNAP NAS configuration (for uploading invoices to accountant's server)
+qnap:
+  host: "qnap.example.com"
+  port: 4320
+  username: "YOUR-USERNAME"
+  password: "YOUR-PASSWORD"
+  # Target folder for purchase invoices (organized by month automatically)
+  upload_path: "/YOUR-SHARE/DOKUMENTY KSIĘGOWE - ZAKUP"
+  use_ssl: true
+  # Set to false for self-signed certificates (common on QNAP devices)
+  verify_ssl: false
+  # Automatically create MM.YYYY subfolders based on invoice date
+  organize_by_month: true
+
 # Optional: Override default prompts
 prompts:
   # Prompt for checking if attachment contains your NIP

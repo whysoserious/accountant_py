@@ -2,6 +2,7 @@
 """
 Main accountant script for downloading and renaming invoices.
 """
+
 import argparse
 import sys
 import os
@@ -10,6 +11,7 @@ from config_parser import load_config, validate_mailbox_names
 from imap_client import IMAPClient
 from attachment_processor import AttachmentProcessor, ProcessResult
 from invoice_renamer import InvoiceRenamer
+from qnap_client import QNAPClient, QNAPConfig as QNAPClientConfig
 from logger_util import setup_logger, create_download_report
 
 
@@ -76,9 +78,7 @@ def download_command(args: argparse.Namespace) -> int:
                 try:
                     imap_client.connect()
                 except Exception as e:
-                    logger.error(
-                        f"Failed to connect to mailbox {mailbox_name}: {e}"
-                    )
+                    logger.error(f"Failed to connect to mailbox {mailbox_name}: {e}")
                     logger.warning(
                         f"Skipping mailbox {mailbox_name} and continuing with others..."
                     )
@@ -91,7 +91,9 @@ def download_command(args: argparse.Namespace) -> int:
                 mailbox_results[mailbox_name] = search_result
 
                 # Process each attachment
-                logger.info(f"\nProcessing {len(search_result.attachments_found)} attachments...")
+                logger.info(
+                    f"\nProcessing {len(search_result.attachments_found)} attachments..."
+                )
 
                 for attachment in search_result.attachments_found:
                     result = processor.process_attachment(
@@ -121,7 +123,9 @@ def download_command(args: argparse.Namespace) -> int:
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print("\nMake sure your config file exists. See config.example.yaml for reference.")
+        print(
+            "\nMake sure your config file exists. See config.example.yaml for reference."
+        )
         return 1
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -129,6 +133,115 @@ def download_command(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
+        traceback.print_exc()
+        return 1
+
+
+def upload_command(args: argparse.Namespace) -> int:
+    """
+    Execute the upload command to send invoices to QNAP NAS.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    try:
+        # Load configuration
+        config = load_config(args.config)
+
+        # Set up logger
+        logger = setup_logger(
+            name="accountant_upload",
+            log_file=None,
+            level=args.log_level,
+        )
+
+        logger.info("Starting QNAP upload process...")
+
+        if not config.qnap:
+            logger.error("No QNAP configuration found in config file.")
+            logger.error(
+                "Add a 'qnap' section to your config. See config.example.yaml."
+            )
+            return 1
+
+        # Collect files to upload
+        file_paths: List[str] = []
+
+        if args.files:
+            for fp in args.files:
+                if os.path.isfile(fp):
+                    file_paths.append(os.path.abspath(fp))
+                else:
+                    logger.warning(f"File not found, skipping: {fp}")
+
+        elif args.directory:
+            if not os.path.isdir(args.directory):
+                logger.error(f"Directory not found: {args.directory}")
+                return 1
+            for f in sorted(os.listdir(args.directory)):
+                full_path = os.path.join(args.directory, f)
+                if os.path.isfile(full_path):
+                    file_paths.append(os.path.abspath(full_path))
+
+        if not file_paths:
+            logger.error("No files found to upload.")
+            return 1
+
+        logger.info(f"Found {len(file_paths)} file(s) to upload")
+
+        # Build QNAP client config
+        qnap_client_config = QNAPClientConfig(
+            host=config.qnap.host,
+            port=config.qnap.port,
+            username=config.qnap.username,
+            password=config.qnap.password,
+            upload_path=config.qnap.upload_path,
+            use_ssl=config.qnap.use_ssl,
+            verify_ssl=config.qnap.verify_ssl,
+            organize_by_month=config.qnap.organize_by_month,
+        )
+
+        client = QNAPClient(qnap_client_config, logger)
+
+        try:
+            client.login()
+            results = client.upload_invoices(file_paths)
+        finally:
+            client.logout()
+
+        # Report results
+        success_count = sum(1 for r in results if r.success)
+        fail_count = sum(1 for r in results if not r.success)
+
+        logger.info(
+            f"\nUpload complete: {success_count} succeeded, {fail_count} failed"
+        )
+
+        if fail_count > 0:
+            logger.error("Failed uploads:")
+            for r in results:
+                if not r.success:
+                    logger.error(f"  {r.file_path}: {r.error}")
+
+        return 0 if fail_count == 0 else 1
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except (ConnectionError, PermissionError) as e:
+        print(f"QNAP connection error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        import traceback
+
         traceback.print_exc()
         return 1
 
@@ -191,7 +304,9 @@ def rename_command(args: argparse.Namespace) -> int:
             return 1
 
         # Summary
-        logger.info(f"\nSummary: Processed {processed_count} files with {error_count} errors.")
+        logger.info(
+            f"\nSummary: Processed {processed_count} files with {error_count} errors."
+        )
 
         return 0 if error_count == 0 else 1
 
@@ -204,6 +319,7 @@ def rename_command(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -220,6 +336,12 @@ Examples:
 
   # Download from specific mailboxes
   python3 accountant.py download --config config.yaml --mailboxes gmail_personal
+
+  # Upload invoices to QNAP NAS
+  python3 accountant.py upload --config config.yaml --directory ./invoices
+
+  # Upload specific files to QNAP
+  python3 accountant.py upload --config config.yaml --files invoice1.pdf invoice2.pdf
 
   # Rename files in a directory
   python3 accountant.py rename --config config.yaml --directory ./invoices
@@ -262,14 +384,20 @@ Examples:
         help="Process all configured mailboxes",
     )
 
+    # Upload command
+    upload_parser = subparsers.add_parser("upload", help="Upload invoices to QNAP NAS")
+    upload_group = upload_parser.add_mutually_exclusive_group(required=True)
+    upload_group.add_argument("--files", nargs="+", help="List of files to upload")
+    upload_group.add_argument(
+        "--directory", "-d", help="Directory containing files to upload"
+    )
+
     # Rename command
     rename_parser = subparsers.add_parser(
         "rename", help="Rename invoice files based on content"
     )
     rename_group = rename_parser.add_mutually_exclusive_group(required=True)
-    rename_group.add_argument(
-        "--files", nargs="+", help="List of PDF files to rename"
-    )
+    rename_group.add_argument("--files", nargs="+", help="List of PDF files to rename")
     rename_group.add_argument(
         "--directory", "-d", help="Directory containing PDF files to rename"
     )
@@ -279,6 +407,7 @@ Examples:
 
     # Convert log level string to logging constant
     import logging
+
     log_level_map = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -290,6 +419,8 @@ Examples:
     # Execute command
     if args.command == "download":
         exit_code = download_command(args)
+    elif args.command == "upload":
+        exit_code = upload_command(args)
     elif args.command == "rename":
         exit_code = rename_command(args)
     else:
