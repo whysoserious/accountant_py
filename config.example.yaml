@@ -17,7 +17,7 @@ search:
   keywords:
     - invoice
     - faktura
-    - dowod        # Alternative to "dowód zakupu" to avoid encoding issues
+    - dowod
     - potwierdzenie
     - dokument
     - receipt
@@ -52,6 +52,22 @@ output:
 
   # Log file for download operations
   log_file: "./invoice_download.log"
+
+# KSeF (Krajowy System e-Faktur) configuration
+# Generate your token at https://www.podatki.gov.pl/ksef/
+ksef:
+  token: "your_ksef_token_here"
+  # Environment: production, test, or demo
+  environment: "production"
+
+# Attachment filtering
+# PDFs containing any of these keywords (case-insensitive) will be
+# discarded before sending to the LLM, saving API costs
+filter:
+  blacklist_keywords:
+    - warunki
+    - polisa
+    - informacje
 
 # Optional: Override default prompts
 prompts:
@@ -100,6 +116,22 @@ prompts:
     - usługi księgowe
     - usługi telekomunikacyjne
     - zegarek elektroniczny
+    - kawa do biura
+    - elektronika do pracy
+    - narzedzia do pracy
+    - narzedzia do samochodu
+    - naprawa samochodu
+    - wynajem biura
+    - czynsz biuro
+    - media biuro
+    - akcesoria biurowe
+    - wyciag z konta
+    - materialy poligraficzne
+    - wynajem stanowiska biurowego
+    - leasing telefonu
+    - akcesoria do samochodu
+    - wystrój biura
+    - materiały biurowe
 
     Respond in this exact JSON format:
     {

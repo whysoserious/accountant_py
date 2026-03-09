@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Invoice renaming functionality."""
+
 import os
+import hashlib
 import shutil
 import re
 import json
 import base64
 import io
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Set, Tuple, Optional
 import PyPDF2
 import anthropic
 from pdf2image import convert_from_path
@@ -19,7 +21,7 @@ from constants import (
     DEFAULT_DPI,
     DEFAULT_IMAGE_QUALITY,
     MAX_PDF_PAGES,
-    MAX_FILENAME_LENGTH
+    MAX_FILENAME_LENGTH,
 )
 
 
@@ -105,7 +107,9 @@ Extracted text from invoice (for verification only, primary extract from images)
 IMPORTANT: Look closely at the invoice images to extract this information. The extracted text is only provided as a backup.
 """
 
-    def _build_message_content(self, prompt: str, images_base64: List[str]) -> List[Dict]:
+    def _build_message_content(
+        self, prompt: str, images_base64: List[str]
+    ) -> List[Dict]:
         """Build the message content for Claude API."""
         content = [{"type": "text", "text": prompt}]
 
@@ -179,9 +183,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
                 model=CLAUDE_SONNET_MODEL,
                 max_tokens=MAX_TOKENS_CATEGORIZATION,
                 temperature=DEFAULT_TEMPERATURE,
-                messages=[
-                    {"role": "user", "content": content}
-                ],
+                messages=[{"role": "user", "content": content}],
             )
 
             # Extract response text
@@ -197,7 +199,9 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             self.logger.error(f"Anthropic API error for '{pdf_path}': {e}")
             return self.DEFAULT_INVOICE_DATA.copy()
         except Exception as e:
-            self.logger.error(f"Unexpected error during Claude API request for '{pdf_path}': {e}")
+            self.logger.error(
+                f"Unexpected error during Claude API request for '{pdf_path}': {e}"
+            )
             return self.DEFAULT_INVOICE_DATA.copy()
 
     def sanitize_filename(self, filename: str) -> str:
@@ -221,7 +225,9 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             invoice_data.get("description", "Unknown"),
         ]
 
-        sanitized_components = [self.sanitize_filename(str(comp)) for comp in components]
+        sanitized_components = [
+            self.sanitize_filename(str(comp)) for comp in components
+        ]
         new_filename = ", ".join(sanitized_components) + original_extension
 
         return new_filename
@@ -243,13 +249,40 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
         return new_path
 
     def copy_invoice_file(
-        self, file_path: str, invoice_data: Dict[str, str]
+        self,
+        file_path: str,
+        invoice_data: Dict[str, str],
+        known_numbers: Optional[Set[str]] = None,
+        known_checksums: Optional[Set[str]] = None,
     ) -> Tuple[bool, str]:
         """
         Copy the invoice file to a new file with updated name.
-        Returns (success, new_file_path).
+
+        Skips duplicate invoices based on invoice number or file checksum.
+
+        Returns (success, new_file_path). Returns (False, "") for duplicates.
         """
         try:
+            # Check for duplicate by invoice number
+            inv_number = invoice_data.get("invoice_number", "")
+            if known_numbers is not None and inv_number and inv_number != "Unknown":
+                if inv_number.lower() in known_numbers:
+                    self.logger.info(
+                        f"Skipping duplicate (invoice number '{inv_number}'): "
+                        f"{os.path.basename(file_path)}"
+                    )
+                    return False, ""
+
+            # Check for duplicate by file checksum
+            if known_checksums is not None:
+                checksum = self._file_checksum(file_path)
+                if checksum in known_checksums:
+                    self.logger.info(
+                        f"Skipping duplicate (identical content): "
+                        f"{os.path.basename(file_path)}"
+                    )
+                    return False, ""
+
             directory = os.path.dirname(file_path)
             _, extension = os.path.splitext(file_path)
 
@@ -266,6 +299,12 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             # Copy the file
             shutil.copy2(file_path, new_file_path)
             self.logger.info(f"File copied to: {new_file_path}")
+
+            # Update dedup index
+            if known_numbers is not None and inv_number and inv_number != "Unknown":
+                known_numbers.add(inv_number.lower())
+            if known_checksums is not None:
+                known_checksums.add(self._file_checksum(new_file_path))
 
             return True, new_file_path
 
@@ -291,9 +330,17 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
 
         return True
 
-    def process_invoice_file(self, file_path: str) -> bool:
+    def process_invoice_file(
+        self,
+        file_path: str,
+        known_numbers: Optional[Set[str]] = None,
+        known_checksums: Optional[Set[str]] = None,
+    ) -> bool:
         """
         Process a single invoice file: extract info, analyze, and copy with a new name.
+
+        Skips duplicates if dedup sets are provided.
+
         Returns True if successful, False otherwise.
         """
         # Validate file
@@ -316,12 +363,19 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             for key, value in invoice_data.items():
                 self.logger.info(f"  {key}: {value}")
 
-            # Copy the file with new name
+            # Copy the file with new name (with dedup)
             self.logger.info("Copying file with new name...")
-            success, new_file_path = self.copy_invoice_file(file_path, invoice_data)
+            success, new_file_path = self.copy_invoice_file(
+                file_path, invoice_data, known_numbers, known_checksums
+            )
 
             if success:
-                self.logger.info(f"Success! File copied to: {os.path.basename(new_file_path)}")
+                self.logger.info(
+                    f"Success! File copied to: {os.path.basename(new_file_path)}"
+                )
+            elif new_file_path == "":
+                self.logger.info("Skipped (duplicate).")
+                return True  # Not an error, just a duplicate
             else:
                 self.logger.error("Failed to copy file.")
 
@@ -331,17 +385,81 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             self.logger.error(f"Unexpected error processing file '{file_path}': {e}")
             return False
 
+    @staticmethod
+    def _file_checksum(file_path: str) -> str:
+        """Compute SHA256 checksum of a file."""
+        h = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @staticmethod
+    def _extract_invoice_number_from_filename(filename: str) -> Optional[str]:
+        """
+        Extract invoice number from the naming convention.
+
+        Expected format: YYYY-MM-DD, Company, InvoiceNumber, Description.pdf
+        """
+        parts = filename.rsplit(".", 1)[0].split(", ")
+        if len(parts) >= 3:
+            return parts[2].strip()
+        return None
+
+    @staticmethod
+    def _is_renamed_file(filename: str) -> bool:
+        """Check if filename matches the renamed convention (YYYY-MM-DD, ...)."""
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}, ", filename))
+
+    def _build_dedup_index(self, directory: str) -> Tuple[Set[str], Set[str]]:
+        """
+        Build dedup index from already-renamed files in the directory tree.
+
+        Only indexes files matching the naming convention (YYYY-MM-DD, ...)
+        to avoid treating source files as duplicates of themselves.
+
+        Args:
+            directory: Root directory to scan
+
+        Returns:
+            Tuple of (invoice_numbers, checksums)
+        """
+        known_numbers: Set[str] = set()
+        known_checksums: Set[str] = set()
+
+        for root, _, files in os.walk(directory):
+            for f in files:
+                if not self._is_renamed_file(f):
+                    continue
+
+                full_path = os.path.join(root, f)
+
+                # Extract invoice number from filename
+                inv_num = self._extract_invoice_number_from_filename(f)
+                if inv_num:
+                    known_numbers.add(inv_num.lower())
+
+                # Compute checksum
+                try:
+                    known_checksums.add(self._file_checksum(full_path))
+                except OSError:
+                    pass
+
+        return known_numbers, known_checksums
+
     def _find_pdf_files(self, directory: str) -> List[str]:
-        """Find all PDF files in a directory."""
+        """Find PDF files that need renaming (skip already-renamed files)."""
         try:
             pdf_files = [
                 os.path.join(directory, f)
                 for f in os.listdir(directory)
-                if f.lower().endswith(".pdf")
+                if f.lower().endswith(".pdf") and not self._is_renamed_file(f)
             ]
             return pdf_files
         except PermissionError as e:
-            self.logger.error(f"Permission denied accessing directory '{directory}': {e}")
+            self.logger.error(
+                f"Permission denied accessing directory '{directory}': {e}"
+            )
             return []
         except Exception as e:
             self.logger.error(f"Error listing files in directory '{directory}': {e}")
@@ -375,12 +493,21 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
 
         self.logger.info(f"Found {len(pdf_files)} PDF files in '{directory}'")
 
+        # Build dedup index from existing renamed files
+        self.logger.info("Building dedup index from existing files...")
+        known_numbers, known_checksums = self._build_dedup_index(directory)
+        self.logger.info(
+            f"Dedup index: {len(known_numbers)} invoice numbers, "
+            f"{len(known_checksums)} file checksums"
+        )
+
         processed_count = 0
+        skipped_count = 0
         error_count = 0
 
         for pdf_path in pdf_files:
             try:
-                if self.process_invoice_file(pdf_path):
+                if self.process_invoice_file(pdf_path, known_numbers, known_checksums):
                     processed_count += 1
                 else:
                     error_count += 1

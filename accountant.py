@@ -2,14 +2,16 @@
 """
 Main accountant script for downloading and renaming invoices.
 """
+
 import argparse
 import sys
 import os
-from typing import List, Optional
+from typing import List
 from config_parser import load_config, validate_mailbox_names
 from imap_client import IMAPClient
 from attachment_processor import AttachmentProcessor, ProcessResult
 from invoice_renamer import InvoiceRenamer
+from ksef_client import KSeFClient, KSeFConfig as KSeFClientConfig
 from logger_util import setup_logger, create_download_report
 
 
@@ -55,6 +57,7 @@ def download_command(args: argparse.Namespace) -> int:
             nip=config.nip,
             nip_check_prompt=config.prompts.nip_check,
             logger=logger,
+            blacklist_keywords=config.filter.blacklist_keywords,
         )
 
         # Process each mailbox
@@ -76,9 +79,7 @@ def download_command(args: argparse.Namespace) -> int:
                 try:
                     imap_client.connect()
                 except Exception as e:
-                    logger.error(
-                        f"Failed to connect to mailbox {mailbox_name}: {e}"
-                    )
+                    logger.error(f"Failed to connect to mailbox {mailbox_name}: {e}")
                     logger.warning(
                         f"Skipping mailbox {mailbox_name} and continuing with others..."
                     )
@@ -91,7 +92,9 @@ def download_command(args: argparse.Namespace) -> int:
                 mailbox_results[mailbox_name] = search_result
 
                 # Process each attachment
-                logger.info(f"\nProcessing {len(search_result.attachments_found)} attachments...")
+                logger.info(
+                    f"\nProcessing {len(search_result.attachments_found)} attachments..."
+                )
 
                 for attachment in search_result.attachments_found:
                     result = processor.process_attachment(
@@ -121,7 +124,9 @@ def download_command(args: argparse.Namespace) -> int:
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print("\nMake sure your config file exists. See config.example.yaml for reference.")
+        print(
+            "\nMake sure your config file exists. See config.example.yaml for reference."
+        )
         return 1
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -129,6 +134,84 @@ def download_command(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
+        traceback.print_exc()
+        return 1
+
+
+def ksef_command(args: argparse.Namespace) -> int:
+    """
+    Execute the ksef command to download invoices from KSeF.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    try:
+        config = load_config(args.config)
+
+        logger = setup_logger(
+            name="accountant_ksef",
+            log_file=config.output.log_file,
+            level=args.log_level,
+        )
+
+        logger.info("Starting KSeF invoice download...")
+
+        if not config.ksef:
+            logger.error("No KSeF configuration found in config file.")
+            logger.error(
+                "Add a 'ksef' section to your config. See config.example.yaml."
+            )
+            return 1
+
+        ksef_config = KSeFClientConfig(
+            nip=config.nip,
+            token=config.ksef.token,
+            environment=config.ksef.environment,
+        )
+
+        client = KSeFClient(ksef_config, logger)
+
+        try:
+            client.connect()
+
+            role = getattr(args, "role", "buyer")
+            month = getattr(args, "month", None)
+
+            invoices = client.query_invoices(role=role, month=month)
+
+            if not invoices:
+                logger.info("No invoices found in KSeF for the given criteria.")
+                return 0
+
+            saved = client.save_invoices(invoices, config.output.main_directory)
+
+            logger.info(
+                f"\nKSeF download complete: {len(saved)} invoices "
+                f"saved to {config.output.main_directory}"
+            )
+
+        finally:
+            client.disconnect()
+
+        return 0
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except (ConnectionError, PermissionError) as e:
+        print(f"KSeF connection error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        import traceback
+
         traceback.print_exc()
         return 1
 
@@ -191,7 +274,9 @@ def rename_command(args: argparse.Namespace) -> int:
             return 1
 
         # Summary
-        logger.info(f"\nSummary: Processed {processed_count} files with {error_count} errors.")
+        logger.info(
+            f"\nSummary: Processed {processed_count} files with {error_count} errors."
+        )
 
         return 0 if error_count == 0 else 1
 
@@ -204,6 +289,7 @@ def rename_command(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         return 1
 
@@ -262,14 +348,27 @@ Examples:
         help="Process all configured mailboxes",
     )
 
+    # KSeF command
+    ksef_parser = subparsers.add_parser("ksef", help="Download invoices from KSeF")
+    ksef_parser.add_argument(
+        "--role",
+        choices=["buyer", "seller"],
+        default="buyer",
+        help="Invoice role: buyer (purchase) or seller (sales) (default: buyer)",
+    )
+    ksef_parser.add_argument(
+        "--month",
+        type=str,
+        default=None,
+        help="Month to download invoices for in YYYY-MM format (default: current month)",
+    )
+
     # Rename command
     rename_parser = subparsers.add_parser(
         "rename", help="Rename invoice files based on content"
     )
     rename_group = rename_parser.add_mutually_exclusive_group(required=True)
-    rename_group.add_argument(
-        "--files", nargs="+", help="List of PDF files to rename"
-    )
+    rename_group.add_argument("--files", nargs="+", help="List of PDF files to rename")
     rename_group.add_argument(
         "--directory", "-d", help="Directory containing PDF files to rename"
     )
@@ -279,6 +378,7 @@ Examples:
 
     # Convert log level string to logging constant
     import logging
+
     log_level_map = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -290,6 +390,8 @@ Examples:
     # Execute command
     if args.command == "download":
         exit_code = download_command(args)
+    elif args.command == "ksef":
+        exit_code = ksef_command(args)
     elif args.command == "rename":
         exit_code = rename_command(args)
     else:

@@ -3,3 +3,5 @@ anthropic
 pdf2image
 Pillow
 PyYAML
+ksef2
+fpdf2

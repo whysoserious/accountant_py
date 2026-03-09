@@ -2,28 +2,24 @@
 """Constants used throughout the accountant application."""
 
 # File types
-VALID_FILE_EXTENSIONS = [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp"]
+VALID_FILE_EXTENSIONS = [".pdf"]
 VALID_CONTENT_TYPES = [
     "application/pdf",
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/bmp",
 ]
 
 # Gmail specific
 GMAIL_FOLDERS = [
-    'INBOX',
+    "INBOX",
     '"[Gmail]/All Mail"',
-    '[Gmail]/All Mail',
+    "[Gmail]/All Mail",
     '"[Gmail]/Wszystkie"',  # Polish
-    '[Gmail]/Wszystkie',
-    'All Mail'
+    "[Gmail]/Wszystkie",
+    "All Mail",
 ]
 
 # Claude API
-CLAUDE_SONNET_MODEL = "claude-3-7-sonnet-20250219"
-CLAUDE_HAIKU_MODEL = "claude-3-haiku-20240307"
+CLAUDE_SONNET_MODEL = "claude-sonnet-4-6"
+CLAUDE_HAIKU_MODEL = "claude-haiku-4-5"
 MAX_TOKENS_NIP_CHECK = 100
 MAX_TOKENS_NIP_EXTRACT = 50
 MAX_TOKENS_CATEGORIZATION = 400

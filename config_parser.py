@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Configuration parser for accountant script."""
+
 import yaml
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 
@@ -44,6 +45,21 @@ class PromptsConfig:
 
 
 @dataclass
+class FilterConfig:
+    """Configuration for attachment filtering."""
+
+    blacklist_keywords: List[str]
+
+
+@dataclass
+class KSeFConfig:
+    """Configuration for KSeF integration."""
+
+    token: str
+    environment: str = "production"
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -53,6 +69,8 @@ class Config:
     mailboxes: Dict[str, MailboxConfig]
     output: OutputConfig
     prompts: PromptsConfig
+    filter: FilterConfig
+    ksef: Optional[KSeFConfig] = None
 
 
 def load_config(config_path: str) -> Config:
@@ -193,6 +211,23 @@ If you can't find some information, use "Unknown" as the value."""
         categorization=prompts_data.get("categorization", default_categorization),
     )
 
+    # Parse filter config (optional)
+    filter_data = config_data.get("filter", {})
+    filter_config = FilterConfig(
+        blacklist_keywords=filter_data.get("blacklist_keywords", []),
+    )
+
+    # Parse KSeF config (optional)
+    ksef = None
+    ksef_data = config_data.get("ksef")
+    if ksef_data:
+        if "token" not in ksef_data:
+            raise ValueError("Missing 'token' in 'ksef' section")
+        ksef = KSeFConfig(
+            token=ksef_data["token"],
+            environment=ksef_data.get("environment", "production"),
+        )
+
     return Config(
         api_key=api_key,
         nip=nip,
@@ -200,6 +235,8 @@ If you can't find some information, use "Unknown" as the value."""
         mailboxes=mailboxes,
         output=output,
         prompts=prompts,
+        filter=filter_config,
+        ksef=ksef,
     )
 
 

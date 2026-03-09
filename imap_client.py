@@ -6,7 +6,7 @@ from email.message import Message
 import os
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
-from typing import List, Tuple, Optional, Dict, Set
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from config_parser import MailboxConfig, SearchConfig
 import logging
@@ -109,7 +109,7 @@ class IMAPClient:
             for folder_name in GMAIL_FOLDERS:
                 try:
                     self.logger.debug(f"Trying Gmail folder: {folder_name}")
-                    status, data = self.connection.select(folder_name, readonly=True)
+                    status, data = self.connection.select(folder_name)
                     if status == "OK":
                         selected_folder = folder_name.strip('"')
                         self.logger.info(f"Selected folder: {selected_folder} (Gmail)")
@@ -121,11 +121,11 @@ class IMAPClient:
         if not selected_folder:
             # Standard INBOX for other providers or fallback
             try:
-                status, data = self.connection.select("INBOX", readonly=True)
+                status, data = self.connection.select("INBOX")
                 if status == "OK":
                     selected_folder = "INBOX"
                     self.logger.info(f"Selected folder: {selected_folder}")
-            except:
+            except Exception:
                 pass
 
         if not selected_folder:
@@ -144,7 +144,7 @@ class IMAPClient:
                         try:
                             folder_str = folder_info.decode('utf-8')
                             self.logger.debug(f"Available folder: {folder_str}")
-                        except:
+                        except Exception:
                             pass
         except Exception as e:
             self.logger.debug(f"Could not list folders: {e}")
@@ -448,7 +448,7 @@ class IMAPClient:
         try:
             email_date = email.utils.parsedate_to_datetime(date_str)
             return email_date.strftime('%Y-%m-%d')
-        except:
+        except Exception:
             return "Unknown date"
 
     def search_emails(self, search_config: SearchConfig) -> List[Tuple[str, Message]]:

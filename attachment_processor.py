@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Attachment processor for checking NIP and saving files."""
+
 import os
 import base64
 import io
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from dataclasses import dataclass
 from PIL import Image
 import anthropic
@@ -20,7 +21,7 @@ from constants import (
     DEFAULT_IMAGE_QUALITY,
     MAX_PDF_PAGES,
     MAX_FILENAME_LENGTH,
-    NIP_LENGTH
+    NIP_LENGTH,
 )
 
 
@@ -38,7 +39,12 @@ class AttachmentProcessor:
     """Processor for checking attachments and saving them."""
 
     def __init__(
-        self, api_key: str, nip: str, nip_check_prompt: str, logger: logging.Logger
+        self,
+        api_key: str,
+        nip: str,
+        nip_check_prompt: str,
+        logger: logging.Logger,
+        blacklist_keywords: Optional[List[str]] = None,
     ):
         """
         Initialize attachment processor.
@@ -48,11 +54,60 @@ class AttachmentProcessor:
             nip: NIP to search for in attachments
             nip_check_prompt: Prompt template for NIP checking
             logger: Logger instance
+            blacklist_keywords: List of keywords to filter out attachments
         """
         self.client = anthropic.Anthropic(api_key=api_key)
         self.nip = nip
         self.nip_check_prompt = nip_check_prompt
         self.logger = logger
+        self.blacklist_keywords = [kw.lower() for kw in (blacklist_keywords or [])]
+
+    def _is_blacklisted(self, attachment: EmailAttachment) -> bool:
+        """
+        Check if attachment content matches any blacklist keyword.
+
+        Extracts text from PDF and checks for keyword matches.
+
+        Args:
+            attachment: Email attachment to check
+
+        Returns:
+            True if attachment should be discarded, False otherwise
+        """
+        if not self.blacklist_keywords:
+            return False
+
+        try:
+            if not (
+                attachment.content_type == "application/pdf"
+                or attachment.filename.lower().endswith(".pdf")
+            ):
+                return False
+
+            import PyPDF2
+
+            reader = PyPDF2.PdfReader(io.BytesIO(attachment.content))
+            text = ""
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
+            text_lower = text.lower()
+            for keyword in self.blacklist_keywords:
+                if keyword in text_lower:
+                    self.logger.info(
+                        f"Blacklisted: '{attachment.filename}' "
+                        f"matches keyword '{keyword}'"
+                    )
+                    return True
+
+        except Exception as e:
+            self.logger.warning(
+                f"Could not check blacklist for {attachment.filename}: {e}"
+            )
+
+        return False
 
     def _check_user_nip(self, images_base64: list) -> bool:
         """
@@ -119,14 +174,16 @@ class AttachmentProcessor:
 
         # Check first 3 pages
         for img_base64 in images_base64[:3]:
-            extract_content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": img_base64,
-                },
-            })
+            extract_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": img_base64,
+                    },
+                }
+            )
 
         extract_message = self.client.messages.create(
             model=CLAUDE_HAIKU_MODEL,
@@ -150,7 +207,7 @@ class AttachmentProcessor:
 
         return None
 
-    def check_nip(self, attachment: EmailAttachment) -> tuple[bool, Optional[str]]:
+    def check_nip(self, attachment: EmailAttachment) -> Tuple[bool, Optional[str]]:
         """
         Check if attachment contains the configured NIP or any other NIP.
 
@@ -192,9 +249,7 @@ class AttachmentProcessor:
                 )
                 return False, extracted_nip
             else:
-                self.logger.info(
-                    f"❌ No NIP found in {attachment.filename}"
-                )
+                self.logger.info(f"❌ No NIP found in {attachment.filename}")
                 return False, None
 
         except Exception as e:
@@ -248,7 +303,9 @@ class AttachmentProcessor:
             rgb_image = Image.new("RGB", image.size, (255, 255, 255))
             if image.mode == "P":
                 image = image.convert("RGBA")
-            rgb_image.paste(image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None)
+            rgb_image.paste(
+                image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None
+            )
             image = rgb_image
 
         buffered = io.BytesIO()
@@ -273,8 +330,8 @@ class AttachmentProcessor:
         try:
             # Check if it's a PDF
             is_pdf = (
-                attachment.content_type == "application/pdf" or
-                attachment.filename.lower().endswith(".pdf")
+                attachment.content_type == "application/pdf"
+                or attachment.filename.lower().endswith(".pdf")
             )
 
             if is_pdf:
@@ -283,9 +340,7 @@ class AttachmentProcessor:
                 return self._convert_image_to_base64(attachment.content)
 
         except Exception as e:
-            self.logger.error(
-                f"Error converting {attachment.filename} to images: {e}"
-            )
+            self.logger.error(f"Error converting {attachment.filename} to images: {e}")
             return []
 
     def _determine_target_directory(
@@ -294,7 +349,7 @@ class AttachmentProcessor:
         contains_my_nip: bool,
         found_nip: Optional[str],
         uncertain_directory: str,
-        email_date
+        email_date,
     ) -> str:
         """
         Determine the target directory for saving an attachment.
@@ -313,7 +368,9 @@ class AttachmentProcessor:
             # For user's NIP, organize by year-month
             year_month = email_date.strftime("%Y-%m")
             target_dir = os.path.join(output_directory, year_month)
-            self.logger.info(f"📁 Organizing YOUR invoice into month folder: {year_month}")
+            self.logger.info(
+                f"📁 Organizing YOUR invoice into month folder: {year_month}"
+            )
         elif found_nip:
             # For other NIPs (user is seller), organize by NIP
             target_dir = os.path.join(output_directory, found_nip)
@@ -378,7 +435,7 @@ class AttachmentProcessor:
                 contains_my_nip,
                 found_nip,
                 uncertain_directory,
-                attachment.email_date
+                attachment.email_date,
             )
 
             # Create directory if it doesn't exist
@@ -419,7 +476,7 @@ class AttachmentProcessor:
         # Limit length
         if len(filename) > MAX_FILENAME_LENGTH:
             name, ext = os.path.splitext(filename)
-            filename = name[:MAX_FILENAME_LENGTH - len(ext)] + ext
+            filename = name[: MAX_FILENAME_LENGTH - len(ext)] + ext
 
         return filename
 
@@ -441,12 +498,25 @@ class AttachmentProcessor:
             ProcessResult with processing outcome
         """
         try:
+            # Check blacklist before sending to LLM
+            if self._is_blacklisted(attachment):
+                return ProcessResult(
+                    attachment=attachment,
+                    contains_nip=False,
+                    saved_path=None,
+                    error="Discarded: matched blacklist keyword",
+                )
+
             # Check for NIP (returns tuple: contains_my_nip, found_nip)
             contains_my_nip, found_nip = self.check_nip(attachment)
 
             # Save attachment
             saved_path = self.save_attachment(
-                attachment, output_directory, contains_my_nip, found_nip, uncertain_directory
+                attachment,
+                output_directory,
+                contains_my_nip,
+                found_nip,
+                uncertain_directory,
             )
 
             return ProcessResult(
