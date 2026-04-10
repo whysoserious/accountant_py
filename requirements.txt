@@ -5,3 +5,4 @@ Pillow
 PyYAML
 ksef2
 fpdf2
+qrcode[pil]

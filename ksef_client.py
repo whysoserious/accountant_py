@@ -263,7 +263,11 @@ class KSeFClient:
 
             # Render XML to PDF
             try:
-                pdf_bytes = render_invoice_pdf(invoice.xml_content)
+                pdf_bytes = render_invoice_pdf(
+                    invoice.xml_content,
+                    ksef_number=invoice.ksef_number,
+                    seller_nip=invoice.seller_nip,
+                )
                 with open(file_path, "wb") as f:
                     f.write(pdf_bytes)
             except Exception as e:
