@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """KSeF (Krajowy System e-Faktur) client for downloading invoices."""
 
-import hashlib
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, Set
-from xml.etree import ElementTree
+from typing import List, Optional
 
 from ksef2 import Client, Environment
+from ksef2.domain.models.pagination import InvoiceMetadataParams
 from ksef2.services.invoices import InvoicesFilter
 from ksef_pdf_renderer import render_invoice_pdf
+
+# KSeF API caps page_size at 100. Using the max keeps round-trips low while
+# still paginating for months that exceed it.
+_KSEF_PAGE_SIZE = 100
 
 
 @dataclass
@@ -150,54 +153,92 @@ class KSeFClient:
             amount_type="brutto",
         )
 
-        # Query metadata
-        response = self._auth_client.invoices.query_metadata(filters=filters)
-        invoices_meta = response.invoices
+        # Query metadata across all pages. Default page_size is 10, so a naive
+        # single-page read silently truncates any month with >10 invoices.
+        invoices_meta = []
+        page_offset = 0
+        while True:
+            params = InvoiceMetadataParams(
+                page_size=_KSEF_PAGE_SIZE,
+                page_offset=page_offset,
+            )
+            response = self._auth_client.invoices.query_metadata(
+                filters=filters, params=params
+            )
+            invoices_meta.extend(response.invoices)
+            self.logger.info(
+                f"Fetched page {page_offset + 1}: {len(response.invoices)} invoice(s) "
+                f"(total so far: {len(invoices_meta)}, has_more={response.has_more})"
+            )
+            if not response.has_more:
+                break
+            page_offset += 1
 
         self.logger.info(f"Found {len(invoices_meta)} invoices in KSeF")
 
-        # Download each invoice
+        # Download each invoice. We must be resilient to missing metadata
+        # fields — any invoice KSeF returns must end up in the result set.
         results: List[KSeFInvoice] = []
         for meta in invoices_meta:
+            ksef_number = getattr(meta, "ksef_number", None) or "Unknown"
             try:
                 xml_content = self._auth_client.invoices.download_invoice(
-                    ksef_number=meta.ksef_number
+                    ksef_number=ksef_number
                 )
-
-                seller_name = meta.seller.name if meta.seller else "Unknown"
-                seller_nip = meta.seller.nip if meta.seller else "Unknown"
-                buyer_name = meta.buyer.name if meta.buyer else "Unknown"
-                buyer_nip = (
-                    meta.buyer.identifier.value
-                    if meta.buyer and meta.buyer.identifier
-                    else "Unknown"
-                )
-
-                invoice = KSeFInvoice(
-                    ksef_number=meta.ksef_number,
-                    invoice_number=meta.invoice_number,
-                    issue_date=meta.issue_date.strftime("%Y-%m-%d"),
-                    seller_name=seller_name,
-                    seller_nip=seller_nip,
-                    buyer_name=buyer_name,
-                    buyer_nip=buyer_nip,
-                    net_amount=meta.net_amount,
-                    gross_amount=meta.gross_amount,
-                    currency=meta.currency,
-                    xml_content=xml_content,
-                    invoice_type=str(meta.invoice_type),
-                )
-                results.append(invoice)
-
-                self.logger.info(
-                    f"Downloaded: {meta.invoice_number} from {seller_name} "
-                    f"({meta.gross_amount} {meta.currency})"
-                )
-
             except Exception as e:
-                self.logger.error(f"Failed to download invoice {meta.ksef_number}: {e}")
+                self.logger.error(f"Failed to download invoice {ksef_number}: {e}")
+                continue
+
+            seller_name = self._safe_attr(meta, "seller", "name", default="Unknown")
+            seller_nip = self._safe_attr(meta, "seller", "nip", default="Unknown")
+            buyer_name = self._safe_attr(meta, "buyer", "name", default="Unknown")
+            buyer_nip = self._safe_attr(
+                meta, "buyer", "identifier", "value", default="Unknown"
+            )
+
+            try:
+                issue_date = meta.issue_date.strftime("%Y-%m-%d")
+            except AttributeError:
+                issue_date = str(getattr(meta, "issue_date", "Unknown"))
+
+            invoice = KSeFInvoice(
+                ksef_number=ksef_number,
+                invoice_number=getattr(meta, "invoice_number", "Unknown"),
+                issue_date=issue_date,
+                seller_name=seller_name,
+                seller_nip=seller_nip,
+                buyer_name=buyer_name,
+                buyer_nip=buyer_nip,
+                net_amount=getattr(meta, "net_amount", 0.0),
+                gross_amount=getattr(meta, "gross_amount", 0.0),
+                currency=getattr(meta, "currency", ""),
+                xml_content=xml_content,
+                invoice_type=str(getattr(meta, "invoice_type", "")),
+            )
+            results.append(invoice)
+
+            self.logger.info(
+                f"Downloaded: {invoice.invoice_number} from {seller_name} "
+                f"({invoice.gross_amount} {invoice.currency})"
+            )
+
+        if len(results) != len(invoices_meta):
+            self.logger.warning(
+                f"Download gap: KSeF returned {len(invoices_meta)} invoices, "
+                f"downloaded {len(results)}."
+            )
 
         return results
+
+    @staticmethod
+    def _safe_attr(obj, *path: str, default=None):
+        """Walk nested attributes defensively, returning default on any miss."""
+        current = obj
+        for name in path:
+            if current is None:
+                return default
+            current = getattr(current, name, None)
+        return current if current is not None else default
 
     def save_invoices(
         self,
@@ -207,7 +248,9 @@ class KSeFClient:
         """
         Save downloaded KSeF invoices as XML files, organized by month.
 
-        Files are saved to output_directory/YYYY-MM/ based on invoice date.
+        Every invoice returned by KSeF for the queried month is saved. If a
+        target filename already exists, a numeric suffix is appended so the
+        existing file is never overwritten and the new invoice is never lost.
 
         Args:
             invoices: List of KSeF invoices to save
@@ -218,50 +261,25 @@ class KSeFClient:
         """
         saved_paths: List[str] = []
 
-        # Build dedup index: scan existing invoice numbers in output tree
-        known_numbers: Set[str] = set()
-        for root, _, files in os.walk(output_directory):
-            for f in files:
-                parts = f.rsplit(".", 1)[0].split(", ")
-                if len(parts) >= 3:
-                    known_numbers.add(parts[2].strip().lower())
-
         for invoice in invoices:
             # Organize by month: output_directory/YYYY-MM/
             year_month = invoice.issue_date[:7]  # "YYYY-MM" from "YYYY-MM-DD"
             month_dir = os.path.join(output_directory, year_month)
             os.makedirs(month_dir, exist_ok=True)
 
-            # Check for duplicate by invoice number
             safe_seller = self._sanitize(invoice.seller_name)
             safe_number = self._sanitize(invoice.invoice_number)
-            if safe_number.lower() in known_numbers:
-                self.logger.info(
-                    f"Skipping duplicate: {invoice.invoice_number} "
-                    f"from {invoice.seller_name}"
-                )
-                continue
 
-            filename = (
-                f"{invoice.issue_date}, {safe_seller}, " f"{safe_number}, ksef.pdf"
-            )
+            filename = f"{invoice.issue_date}, {safe_seller}, {safe_number}, ksef.pdf"
+            file_path = self._unique_path(os.path.join(month_dir, filename))
 
-            file_path = os.path.join(month_dir, filename)
-
-            # Handle duplicates
-            if os.path.exists(file_path):
-                base, ext = os.path.splitext(file_path)
-                counter = 1
-                while os.path.exists(file_path):
-                    file_path = f"{base}_{counter}{ext}"
-                    counter += 1
-
-            # Save XML
-            xml_path = file_path.replace(".pdf", ".xml")
+            # Save XML alongside the PDF, sharing the same base name.
+            xml_path = os.path.splitext(file_path)[0] + ".xml"
+            xml_path = self._unique_path(xml_path)
             with open(xml_path, "wb") as f:
                 f.write(invoice.xml_content)
 
-            # Render XML to PDF
+            # Render XML to PDF. Rendering failures do NOT block the XML save.
             try:
                 pdf_bytes = render_invoice_pdf(
                     invoice.xml_content,
@@ -272,14 +290,33 @@ class KSeFClient:
                     f.write(pdf_bytes)
             except Exception as e:
                 self.logger.warning(
-                    f"PDF render failed for {invoice.invoice_number}: {e}"
+                    f"PDF render failed for {invoice.invoice_number} "
+                    f"(seller NIP {invoice.seller_nip}): {e}. XML kept at {xml_path}."
                 )
 
             saved_paths.append(file_path)
-            known_numbers.add(safe_number.lower())
-            self.logger.info(f"Saved: {filename}")
+            self.logger.info(f"Saved: {os.path.basename(file_path)}")
+
+        if len(saved_paths) != len(invoices):
+            self.logger.warning(
+                f"Save gap: attempted to save {len(invoices)} invoices, "
+                f"saved {len(saved_paths)} files."
+            )
 
         return saved_paths
+
+    @staticmethod
+    def _unique_path(path: str) -> str:
+        """Append _1, _2, ... to avoid overwriting an existing file."""
+        if not os.path.exists(path):
+            return path
+        base, ext = os.path.splitext(path)
+        counter = 1
+        candidate = f"{base}_{counter}{ext}"
+        while os.path.exists(candidate):
+            counter += 1
+            candidate = f"{base}_{counter}{ext}"
+        return candidate
 
     @staticmethod
     def _sanitize(text: str) -> str:

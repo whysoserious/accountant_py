@@ -20,7 +20,7 @@ python3 accountant.py ksef --role buyer
 # Download invoices from KSeF for a specific month
 python3 accountant.py ksef --role buyer --month 2026-02
 
-# Rename PDFs based on content
+# Rename PDFs based on content (writes to ./invoices/output/)
 python3 accountant.py rename --directory ./invoices
 ```
 
@@ -35,8 +35,11 @@ python3 accountant.py rename --directory ./invoices
   - KSeF invoices → `./invoices/YYYY-MM/` (same structure, named with `ksef.pdf` suffix)
   - Client invoices → `./invoices/<client-nip>/`
   - Uncertain → `./invoices/uncertain/`
-- **✨ Auto-rename**: Extracts date, company, invoice number from PDFs and renames files
-- **🔄 Deduplication**: Skips already-processed invoices by invoice number and file checksum
+- **✨ Auto-rename**: Extracts date, company, invoice number from PDFs and writes renamed copies into `<directory>/output/` (the source directory is left with originals only)
+- **🔄 Deduplication** (runs during `rename`, destructive to the source directory):
+  - **Byte-identical dupes**: source PDFs are grouped by SHA256 before renaming; for each group only one copy is kept, the rest are deleted. Source PDFs whose hash already matches a file in `output/` are also deleted.
+  - **Logical dupes**: after Claude extracts invoice metadata, files matching an already-processed `(company, invoice_number)` pair are skipped and the source PDF is deleted.
+  - `--files` mode (explicit file list) performs the same detection but never deletes source files.
 
 ## Configuration
 
@@ -92,4 +95,5 @@ Then map the QNAP shared folder to a local directory on your system so your work
 - `./invoices/YYYY-MM/` - Your invoices by month
 - `./invoices/<nip>/` - Invoices you issued to clients
 - `./invoices/uncertain/` - Needs manual review
+- `<rename-directory>/output/` - Renamed copies produced by `rename --directory` (created automatically; source directory keeps originals, minus any duplicates removed by dedup)
 - `./invoice_download.log` - Detailed logs
