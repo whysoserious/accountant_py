@@ -180,8 +180,12 @@ def ksef_command(args: argparse.Namespace) -> int:
 
             role = getattr(args, "role", "buyer")
             month = getattr(args, "month", None)
+            use_bulk = getattr(args, "bulk", False)
 
-            invoices = client.query_invoices(role=role, month=month)
+            if use_bulk:
+                invoices = client.bulk_export(role=role, month=month)
+            else:
+                invoices = client.query_invoices(role=role, month=month)
 
             if not invoices:
                 logger.info("No invoices found in KSeF for the given criteria.")
@@ -361,6 +365,15 @@ Examples:
         type=str,
         default=None,
         help="Month to download invoices for in YYYY-MM format (default: current month)",
+    )
+    ksef_parser.add_argument(
+        "--bulk",
+        action="store_true",
+        help=(
+            "Use the async bulk export endpoint instead of per-invoice downloads. "
+            "Bypasses the per-invoice rate limit at the cost of a one-time "
+            "schedule/poll wait."
+        ),
     )
 
     # Rename command
