@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail rather than silently resolving fresh versions if uv.lock is stale.
+  UV_FROZEN: "1"
+
+jobs:
+  # Formatting and linting are version-independent and take seconds, so they
+  # run once and gate the matrix below -- cheapest failure first.
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: black
+        run: uv run black --check --diff .
+
+      - name: flake8
+        run: uv run flake8 .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every failing version, not just the first.
+      fail-fast: false
+      matrix:
+        # The matrix is deliberately wide. A missing `Set` import in
+        # imap_client's annotations was invisible on 3.14, where PEP 649 defers
+        # annotation evaluation, but raised NameError on import for earlier
+        # versions. Testing a single version is what hid it.
+        #
+        # 3.12 is the floor because ksef2 publishes no wheel below it.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: pytest
+        run: uv run pytest

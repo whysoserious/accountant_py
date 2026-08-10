@@ -13,7 +13,6 @@ from typing import Dict, List, Set, Tuple, Optional
 import PyPDF2
 import anthropic
 from pdf2image import convert_from_path
-from PIL import Image
 from constants import (
     CLAUDE_SONNET_MODEL,
     MAX_TOKENS_CATEGORIZATION,
@@ -36,9 +35,7 @@ class InvoiceRenamer:
         "description": "Unknown",
     }
 
-    def __init__(
-        self, api_key: str, categorization_prompt: str, logger: logging.Logger
-    ):
+    def __init__(self, api_key: str, categorization_prompt: str, logger: logging.Logger):
         """
         Initialize invoice renamer.
 
@@ -63,22 +60,16 @@ class InvoiceRenamer:
                     if page_text:
                         text += page_text + "\n"
                     else:
-                        text += (
-                            f"[Page {page_num+1}: No text found or page is an image]\n"
-                        )
+                        text += f"[Page {page_num+1}: No text found or page is an image]\n"
             return text
         except Exception as e:
             self.logger.error(f"Error during text extraction from '{pdf_path}': {e}")
             return f"Error during text extraction: {e}"
 
-    def convert_pdf_to_images(
-        self, pdf_path: str, max_pages: int = MAX_PDF_PAGES
-    ) -> List[str]:
+    def convert_pdf_to_images(self, pdf_path: str, max_pages: int = MAX_PDF_PAGES) -> List[str]:
         """Convert PDF to images and return a list of base64-encoded images."""
         try:
-            images = convert_from_path(
-                pdf_path, dpi=DEFAULT_DPI, first_page=1, last_page=max_pages
-            )
+            images = convert_from_path(pdf_path, dpi=DEFAULT_DPI, first_page=1, last_page=max_pages)
 
             image_base64_list = []
             for i, image in enumerate(images):
@@ -92,9 +83,7 @@ class InvoiceRenamer:
 
             return image_base64_list
         except Exception as e:
-            self.logger.error(
-                f"Error during PDF to image conversion for '{pdf_path}': {e}"
-            )
+            self.logger.error(f"Error during PDF to image conversion for '{pdf_path}': {e}")
             return []
 
     def _build_categorization_prompt(self, extracted_text: str) -> str:
@@ -107,9 +96,7 @@ Extracted text from invoice (for verification only, primary extract from images)
 IMPORTANT: Look closely at the invoice images to extract this information. The extracted text is only provided as a backup.
 """
 
-    def _build_message_content(
-        self, prompt: str, images_base64: List[str]
-    ) -> List[Dict]:
+    def _build_message_content(self, prompt: str, images_base64: List[str]) -> List[Dict]:
         """Build the message content for Claude API."""
         content = [{"type": "text", "text": prompt}]
 
@@ -149,9 +136,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             self.logger.error(f"Failed to parse JSON from Claude's response: {e}")
             return self.DEFAULT_INVOICE_DATA.copy()
 
-    def analyze_invoice_with_claude(
-        self, pdf_path: str, extracted_text: str
-    ) -> Dict[str, str]:
+    def analyze_invoice_with_claude(self, pdf_path: str, extracted_text: str) -> Dict[str, str]:
         """
         Use Claude API to analyze invoice content and extract key information.
         Returns a dictionary with date, company, invoice_number, and description.
@@ -161,9 +146,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             image_base64_list = self.convert_pdf_to_images(pdf_path)
 
             if not image_base64_list:
-                self.logger.warning(
-                    "PDF to image conversion failed, using text-only extraction."
-                )
+                self.logger.warning("PDF to image conversion failed, using text-only extraction.")
 
             # Prepare the prompt
             prompt = self._build_categorization_prompt(extracted_text)
@@ -199,9 +182,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             self.logger.error(f"Anthropic API error for '{pdf_path}': {e}")
             return self.DEFAULT_INVOICE_DATA.copy()
         except Exception as e:
-            self.logger.error(
-                f"Unexpected error during Claude API request for '{pdf_path}': {e}"
-            )
+            self.logger.error(f"Unexpected error during Claude API request for '{pdf_path}': {e}")
             return self.DEFAULT_INVOICE_DATA.copy()
 
     def sanitize_filename(self, filename: str) -> str:
@@ -214,9 +195,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
         max_base_length = MAX_FILENAME_LENGTH - 20
         return filename[:max_base_length]
 
-    def generate_new_filename(
-        self, invoice_data: Dict[str, str], original_extension: str
-    ) -> str:
+    def generate_new_filename(self, invoice_data: Dict[str, str], original_extension: str) -> str:
         """Generate a new filename based on the invoice data."""
         components = [
             invoice_data.get("date", "Unknown"),
@@ -225,9 +204,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             invoice_data.get("description", "Unknown"),
         ]
 
-        sanitized_components = [
-            self.sanitize_filename(str(comp)) for comp in components
-        ]
+        sanitized_components = [self.sanitize_filename(str(comp)) for comp in components]
         new_filename = ", ".join(sanitized_components) + original_extension
 
         return new_filename
@@ -290,9 +267,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
         Returns the new PDF path on success, None on failure.
         """
         os.makedirs(output_dir, exist_ok=True)
-        target_pdf = self._get_unique_filepath(
-            os.path.join(output_dir, os.path.basename(pdf_path))
-        )
+        target_pdf = self._get_unique_filepath(os.path.join(output_dir, os.path.basename(pdf_path)))
         old_xml = os.path.splitext(pdf_path)[0] + ".xml"
 
         try:
@@ -390,8 +365,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
                 checksum = self._file_checksum(file_path)
                 if checksum in known_checksums:
                     self.logger.info(
-                        f"Skipping duplicate (identical content): "
-                        f"{os.path.basename(file_path)}"
+                        f"Skipping duplicate (identical content): " f"{os.path.basename(file_path)}"
                     )
                     return False, ""
 
@@ -485,25 +459,19 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             )
 
             if success:
-                self.logger.info(
-                    f"Success! File copied to: {os.path.basename(new_file_path)}"
-                )
+                self.logger.info(f"Success! File copied to: {os.path.basename(new_file_path)}")
                 if consume_source:
                     self._move_companion_xml_alongside(file_path, new_file_path)
                     try:
                         os.remove(file_path)
-                        self.logger.info(
-                            f"Removed source: {os.path.basename(file_path)}"
-                        )
+                        self.logger.info(f"Removed source: {os.path.basename(file_path)}")
                     except OSError as e:
                         self.logger.error(f"Failed to remove source '{file_path}': {e}")
             elif new_file_path == "":
                 self.logger.info("Skipped (duplicate).")
                 if consume_source:
                     if self._delete_pdf_with_companion(file_path):
-                        self.logger.info(
-                            f"Deleted source duplicate: {os.path.basename(file_path)}"
-                        )
+                        self.logger.info(f"Deleted source duplicate: {os.path.basename(file_path)}")
                 return True  # Not an error, just a duplicate
             else:
                 self.logger.error("Failed to copy file.")
@@ -561,9 +529,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
         desc = self._extract_description_from_filename(filename)
         return desc in self._GENERIC_DESCRIPTIONS
 
-    def _build_dedup_index(
-        self, directory: str
-    ) -> Tuple[Set[Tuple[str, str]], Set[str]]:
+    def _build_dedup_index(self, directory: str) -> Tuple[Set[Tuple[str, str]], Set[str]]:
         """
         Build dedup index from files previously written to ``<directory>/output/``.
 
@@ -623,9 +589,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
                 pdf_files.append(os.path.join(directory, f))
             return pdf_files
         except PermissionError as e:
-            self.logger.error(
-                f"Permission denied accessing directory '{directory}': {e}"
-            )
+            self.logger.error(f"Permission denied accessing directory '{directory}': {e}")
             return []
         except Exception as e:
             self.logger.error(f"Error listing files in directory '{directory}': {e}")
@@ -649,9 +613,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
                 if f.lower().endswith(".pdf")
             ]
         except PermissionError as e:
-            self.logger.error(
-                f"Permission denied accessing directory '{directory}': {e}"
-            )
+            self.logger.error(f"Permission denied accessing directory '{directory}': {e}")
             return []
         except Exception as e:
             self.logger.error(f"Error listing files in directory '{directory}': {e}")
@@ -718,9 +680,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             if cs in processed_checksums:
                 for p in paths:
                     if self._delete_pdf_with_companion(p):
-                        self.logger.info(
-                            f"Deleted (already in output/): {os.path.basename(p)}"
-                        )
+                        self.logger.info(f"Deleted (already in output/): {os.path.basename(p)}")
                         deleted += 1
             elif len(paths) > 1:
                 keeper = paths[0]
@@ -805,9 +765,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             self.logger.info(f"No un-renamed PDFs to process in '{directory}'.")
             return 0, 0
 
-        self.logger.info(
-            f"Found {len(pdf_files)} PDF file(s) needing rename in '{directory}'"
-        )
+        self.logger.info(f"Found {len(pdf_files)} PDF file(s) needing rename in '{directory}'")
 
         # Build dedup index from existing renamed files
         self.logger.info("Building dedup index from existing files...")

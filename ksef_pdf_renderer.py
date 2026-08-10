@@ -278,8 +278,7 @@ class InvoicePDF(FPDF):
                 return
 
         raise RuntimeError(
-            "No suitable TTF font found. "
-            "Install liberation-sans-fonts or dejavu-sans-fonts."
+            "No suitable TTF font found. " "Install liberation-sans-fonts or dejavu-sans-fonts."
         )
 
     def _separator(self) -> None:
@@ -303,9 +302,7 @@ class InvoicePDF(FPDF):
         self.set_font(self.FONT_NAME, "", 8)
         self.cell(0, 5, value, new_x="LMARGIN", new_y="NEXT")
 
-    def _party_block(
-        self, title: str, name: str, nip: str, addr1: str, addr2: str
-    ) -> None:
+    def _party_block(self, title: str, name: str, nip: str, addr1: str, addr2: str) -> None:
         """Draw a party information block (seller/buyer)."""
         self._heading(title)
         self._label_value("Nazwa:", name)
@@ -561,9 +558,7 @@ def render_invoice_pdf(
             pdf.set_text_color(*pdf.GRAY_TEXT)
 
             if inv.ksef_number:
-                pdf.cell(
-                    0, 4, f"Nr KSeF: {inv.ksef_number}", new_x="LEFT", new_y="NEXT"
-                )
+                pdf.cell(0, 4, f"Nr KSeF: {inv.ksef_number}", new_x="LEFT", new_y="NEXT")
                 pdf.set_x(qr_x + 45)
 
             pdf.cell(0, 4, "Link weryfikacyjny:", new_x="LEFT", new_y="NEXT")

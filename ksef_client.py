@@ -161,9 +161,7 @@ class KSeFClient:
                 if attempt > _RATE_LIMIT_MAX_RETRIES:
                     raise
                 raw_wait = (
-                    e.retry_after
-                    if e.retry_after is not None
-                    else _RATE_LIMIT_FALLBACK_SECONDS
+                    e.retry_after if e.retry_after is not None else _RATE_LIMIT_FALLBACK_SECONDS
                 ) + _RATE_LIMIT_BUFFER_SECONDS
                 wait_seconds = min(raw_wait, _RATE_LIMIT_MAX_WAIT_SECONDS)
                 self.logger.warning(
@@ -228,9 +226,7 @@ class KSeFClient:
             )
             response = self._call_with_rate_limit_retry(
                 f"query_metadata (page_offset={page_offset})",
-                lambda: self._auth_client.invoices.query_metadata(
-                    filters=filters, params=params
-                ),
+                lambda: self._auth_client.invoices.query_metadata(filters=filters, params=params),
             )
             invoices_meta.extend(response.invoices)
             self.logger.info(
@@ -262,9 +258,7 @@ class KSeFClient:
             seller_name = self._safe_attr(meta, "seller", "name", default="Unknown")
             seller_nip = self._safe_attr(meta, "seller", "nip", default="Unknown")
             buyer_name = self._safe_attr(meta, "buyer", "name", default="Unknown")
-            buyer_nip = self._safe_attr(
-                meta, "buyer", "identifier", "value", default="Unknown"
-            )
+            buyer_nip = self._safe_attr(meta, "buyer", "identifier", "value", default="Unknown")
 
             try:
                 issue_date = meta.issue_date.strftime("%Y-%m-%d")
@@ -318,9 +312,7 @@ class KSeFClient:
         self._ensure_authenticated()
 
         date_from, date_to, month_str = self._month_range(month)
-        self.logger.info(
-            f"Bulk-exporting KSeF invoices (role={role}, month={month_str})..."
-        )
+        self.logger.info(f"Bulk-exporting KSeF invoices (role={role}, month={month_str})...")
 
         filters = InvoicesFilter(
             role=role,
@@ -335,17 +327,14 @@ class KSeFClient:
             self.logger.info("No invoices to export.")
             return []
 
-        self.logger.info(
-            f"Scheduling bulk export for {len(invoices_meta)} invoice(s)..."
-        )
+        self.logger.info(f"Scheduling bulk export for {len(invoices_meta)} invoice(s)...")
         package_blobs: List[bytes] = self._auth_client.invoices.export_and_download(
             filters=filters,
             timeout=timeout,
             poll_interval=poll_interval,
         )
         self.logger.info(
-            f"Bulk export downloaded {len(package_blobs)} package part(s); "
-            f"extracting XMLs..."
+            f"Bulk export downloaded {len(package_blobs)} package part(s); " f"extracting XMLs..."
         )
 
         xml_by_ksef = self._extract_xmls_by_ksef_number(package_blobs)
@@ -433,17 +422,13 @@ class KSeFClient:
             ksef_number = getattr(meta, "ksef_number", None) or "Unknown"
             xml_content = xml_by_ksef.get(ksef_number)
             if xml_content is None:
-                self.logger.warning(
-                    f"Bulk export missing XML for {ksef_number}; skipping."
-                )
+                self.logger.warning(f"Bulk export missing XML for {ksef_number}; skipping.")
                 continue
 
             seller_name = self._safe_attr(meta, "seller", "name", default="Unknown")
             seller_nip = self._safe_attr(meta, "seller", "nip", default="Unknown")
             buyer_name = self._safe_attr(meta, "buyer", "name", default="Unknown")
-            buyer_nip = self._safe_attr(
-                meta, "buyer", "identifier", "value", default="Unknown"
-            )
+            buyer_nip = self._safe_attr(meta, "buyer", "identifier", "value", default="Unknown")
 
             try:
                 issue_date = meta.issue_date.strftime("%Y-%m-%d")

@@ -8,15 +8,12 @@ import re
 import base64
 import io
 from pdf2image import convert_from_path
-from PIL import Image
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
 
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments for invoice renaming."""
-    parser = argparse.ArgumentParser(
-        description="Rename invoice PDF files based on their content."
-    )
+    parser = argparse.ArgumentParser(description="Rename invoice PDF files based on their content.")
     parser.add_argument(
         "--files", nargs="+", required=True, help="List of PDF invoice files to process"
     )
@@ -73,9 +70,7 @@ def convert_pdf_to_images(pdf_path: str, max_pages: int = 10) -> List[str]:
         return []
 
 
-def analyze_invoice_with_claude(
-    pdf_path: str, extracted_text: str, api_key: str
-) -> Dict[str, str]:
+def analyze_invoice_with_claude(pdf_path: str, extracted_text: str, api_key: str) -> Dict[str, str]:
     """
     Use Claude API to analyze invoice content and extract key information.
     Returns a dictionary with date, company, invoice_number, and description.
@@ -90,9 +85,7 @@ def analyze_invoice_with_claude(
         image_base64_list = convert_pdf_to_images(pdf_path)
 
         if not image_base64_list:
-            print(
-                "Warning: PDF to image conversion failed, using text-only extraction."
-            )
+            print("Warning: PDF to image conversion failed, using text-only extraction.")
 
         # Prepare the prompt for Claude
         prompt = f"""Extract the following information from this invoice:
@@ -163,9 +156,7 @@ IMPORTANT: Look closely at the invoice images to extract this information. The e
             model="claude-3-7-sonnet-20250219",
             max_tokens=1000,
             temperature=0.0,  # Use 0 for more deterministic responses
-            messages=[
-                {"role": "user", "content": content if image_base64_list else prompt}
-            ],
+            messages=[{"role": "user", "content": content if image_base64_list else prompt}],
         )
 
         # Extract response text
@@ -318,7 +309,7 @@ def process_invoice_file(file_path: str, api_key: str) -> None:
     if success:
         print(f"Success! File copied to: {os.path.basename(new_file_path)}")
     else:
-        print(f"Failed to copy file.")
+        print("Failed to copy file.")
 
 
 def main() -> None:

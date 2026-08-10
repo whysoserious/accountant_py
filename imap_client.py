@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """IMAP client for searching and downloading email attachments."""
+
 import imaplib
 import email
 from email.message import Message
-import os
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 from dataclasses import dataclass
 from config_parser import MailboxConfig, SearchConfig
 import logging
@@ -64,9 +64,7 @@ class IMAPClient:
             )
 
             if self.config.use_ssl:
-                self.connection = imaplib.IMAP4_SSL(
-                    self.config.host, self.config.port
-                )
+                self.connection = imaplib.IMAP4_SSL(self.config.host, self.config.port)
             else:
                 self.connection = imaplib.IMAP4(self.config.host, self.config.port)
 
@@ -142,7 +140,7 @@ class IMAPClient:
                 for folder_info in folders:
                     if folder_info:
                         try:
-                            folder_str = folder_info.decode('utf-8')
+                            folder_str = folder_info.decode("utf-8")
                             self.logger.debug(f"Available folder: {folder_str}")
                         except Exception:
                             pass
@@ -164,7 +162,9 @@ class IMAPClient:
         year = date.year
         return f"{day}-{month}-{year}"
 
-    def _build_gmail_query(self, since_date: datetime, keywords: List[str], with_attachments: bool = True) -> str:
+    def _build_gmail_query(
+        self, since_date: datetime, keywords: List[str], with_attachments: bool = True
+    ) -> str:
         """
         Build Gmail X-GM-RAW query string.
 
@@ -183,7 +183,7 @@ class IMAPClient:
         safe_keywords = []
         for kw in keywords:
             try:
-                kw.encode('ascii')
+                kw.encode("ascii")
                 safe_keywords.append(kw)
             except UnicodeEncodeError:
                 self.logger.debug(f"Skipping non-ASCII keyword: {kw}")
@@ -194,12 +194,12 @@ class IMAPClient:
         keyword_parts = " OR ".join(safe_keywords)
 
         # Build query
-        query_parts = [f'after:{gmail_date}']
+        query_parts = [f"after:{gmail_date}"]
         if with_attachments:
-            query_parts.append('has:attachment')
-        query_parts.append(f'({keyword_parts})')
+            query_parts.append("has:attachment")
+        query_parts.append(f"({keyword_parts})")
 
-        return ' '.join(query_parts)
+        return " ".join(query_parts)
 
     def _search_gmail(self, search_config: SearchConfig, since_date: datetime) -> Set[bytes]:
         """
@@ -215,7 +215,9 @@ class IMAPClient:
         all_email_ids = set()
 
         # Build Gmail query with attachments
-        gmail_query = self._build_gmail_query(since_date, search_config.keywords, with_attachments=True)
+        gmail_query = self._build_gmail_query(
+            since_date, search_config.keywords, with_attachments=True
+        )
 
         if not gmail_query:
             self.logger.warning("No ASCII-safe keywords for Gmail search")
@@ -234,7 +236,7 @@ class IMAPClient:
                 self.logger.info(f"📧 Gmail X-GM-RAW found {len(email_ids)} emails")
                 return all_email_ids
             else:
-                self.logger.warning(f"⚠️ Gmail X-GM-RAW returned 0 results")
+                self.logger.warning("⚠️ Gmail X-GM-RAW returned 0 results")
 
                 # Try alternative date formats
                 all_email_ids.update(self._try_alternative_gmail_formats(search_config, since_date))
@@ -244,7 +246,9 @@ class IMAPClient:
 
         return all_email_ids
 
-    def _try_alternative_gmail_formats(self, search_config: SearchConfig, since_date: datetime) -> Set[bytes]:
+    def _try_alternative_gmail_formats(
+        self, search_config: SearchConfig, since_date: datetime
+    ) -> Set[bytes]:
         """
         Try alternative Gmail query formats if the primary format fails.
 
@@ -266,9 +270,9 @@ class IMAPClient:
         # Try M/D/YYYY format
         gmail_date_mdy = f"{since_date.month}/{since_date.day}/{since_date.year}"
         queries_to_try = [
-            f'after:{gmail_date_mdy} has:attachment ({keyword_parts})',
-            f'newer_than:{search_config.days_back}d has:attachment ({keyword_parts})',
-            f'has:attachment ({keyword_parts})'  # Without date as last resort
+            f"after:{gmail_date_mdy} has:attachment ({keyword_parts})",
+            f"newer_than:{search_config.days_back}d has:attachment ({keyword_parts})",
+            f"has:attachment ({keyword_parts})",  # Without date as last resort
         ]
 
         for query in queries_to_try:
@@ -290,12 +294,14 @@ class IMAPClient:
     def _is_ascii_safe(self, text: str) -> bool:
         """Check if text is ASCII-safe."""
         try:
-            text.encode('ascii')
+            text.encode("ascii")
             return True
         except UnicodeEncodeError:
             return False
 
-    def _search_standard_imap(self, search_config: SearchConfig, since_date: datetime) -> Set[bytes]:
+    def _search_standard_imap(
+        self, search_config: SearchConfig, since_date: datetime
+    ) -> Set[bytes]:
         """
         Search using standard IMAP commands.
 
@@ -328,8 +334,9 @@ class IMAPClient:
 
         return all_email_ids
 
-    def _fetch_and_process_email(self, email_id: bytes, since_date: datetime,
-                                  use_date_filter: bool) -> Optional[Tuple[str, Message]]:
+    def _fetch_and_process_email(
+        self, email_id: bytes, since_date: datetime, use_date_filter: bool
+    ) -> Optional[Tuple[str, Message]]:
         """
         Fetch and process a single email.
 
@@ -381,8 +388,9 @@ class IMAPClient:
             self.logger.error(f"Error fetching email {email_id_str}: {e}")
             return None
 
-    def _is_email_within_date_range(self, email_message: Message, since_date: datetime,
-                                     subject: str) -> bool:
+    def _is_email_within_date_range(
+        self, email_message: Message, since_date: datetime, subject: str
+    ) -> bool:
         """
         Check if email is within the specified date range.
 
@@ -430,7 +438,7 @@ class IMAPClient:
         for part in email_message.walk():
             if part.get_content_disposition() == "attachment":
                 filename = part.get_filename()
-                if filename and filename.lower().endswith('.pdf'):
+                if filename and filename.lower().endswith(".pdf"):
                     return True
         return False
 
@@ -447,7 +455,7 @@ class IMAPClient:
         date_str = email_message.get("Date", "")
         try:
             email_date = email.utils.parsedate_to_datetime(date_str)
-            return email_date.strftime('%Y-%m-%d')
+            return email_date.strftime("%Y-%m-%d")
         except Exception:
             return "Unknown date"
 
@@ -544,9 +552,7 @@ class IMAPClient:
 
             # Only process PDF and image files
             if not self._is_valid_attachment(filename, content_type):
-                self.logger.debug(
-                    f"Skipping attachment '{filename}' (type: {content_type})"
-                )
+                self.logger.debug(f"Skipping attachment '{filename}' (type: {content_type})")
                 continue
 
             # Get attachment content
@@ -593,9 +599,7 @@ class IMAPClient:
         for part, encoding in decode_header(header):
             if isinstance(part, bytes):
                 try:
-                    decoded_parts.append(
-                        part.decode(encoding or "utf-8", errors="replace")
-                    )
+                    decoded_parts.append(part.decode(encoding or "utf-8", errors="replace"))
                 except Exception:
                     decoded_parts.append(part.decode("utf-8", errors="replace"))
             else:
@@ -616,20 +620,14 @@ class IMAPClient:
         """
         # Check file extension
         filename_lower = filename.lower()
-        has_valid_extension = any(
-            filename_lower.endswith(ext) for ext in VALID_FILE_EXTENSIONS
-        )
+        has_valid_extension = any(filename_lower.endswith(ext) for ext in VALID_FILE_EXTENSIONS)
 
         # Check content type
-        has_valid_content_type = any(
-            content_type.startswith(ct) for ct in VALID_CONTENT_TYPES
-        )
+        has_valid_content_type = any(content_type.startswith(ct) for ct in VALID_CONTENT_TYPES)
 
         return has_valid_extension or has_valid_content_type
 
-    def search_and_extract_attachments(
-        self, search_config: SearchConfig
-    ) -> EmailSearchResult:
+    def search_and_extract_attachments(self, search_config: SearchConfig) -> EmailSearchResult:
         """
         Search emails and extract all attachments.
 

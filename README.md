@@ -1,28 +1,170 @@
 # Accountant - Polish Invoice Manager
 
-## Quick Start
+Downloads your Polish invoices from email and KSeF, names them consistently, and
+builds the monthly Excel report your accountant asks for.
+
+## Requirements
+
+| Requirement | Why | Notes |
+|---|---|---|
+| **Python 3.12+** | `ksef2` publishes no wheel below 3.12 | Installed for you by mise |
+| **[uv](https://docs.astral.sh/uv/)** | Dependency management | **pip is not used** — dependencies live in `pyproject.toml`, locked in `uv.lock` |
+| **[mise](https://mise.jdx.dev)** *(optional)* | Pins the Python and uv versions | `mise.toml` is checked in |
+| **poppler** | `rename` rasterises PDF pages for the vision model | Only needed for `rename`; `ksef` and `excel` work without it |
+| **Anthropic API key** | NIP detection, categorisation, invoice descriptions | [console.anthropic.com](https://console.anthropic.com) |
+| **KSeF token** | `ksef` downloads | See [KSeF Setup](#ksef-setup) below |
+| **IMAP credentials** | `download` from mailboxes | See [Gmail Setup](#gmail-setup) below |
+
+Install poppler:
 
 ```bash
-# Setup
-python3 -m venv venv && source venv/bin/activate
-pip3 install -r requirements.txt
-cp config.example.yaml config.yaml  # Edit with your details
-
-# Download invoices from email (last 45 days)
-python3 accountant.py download --mailboxes gmail_personal
-
-# Download from all configured mailboxes
-python3 accountant.py download --all-mailboxes
-
-# Download invoices from KSeF (current month)
-python3 accountant.py ksef --role buyer
-
-# Download invoices from KSeF for a specific month
-python3 accountant.py ksef --role buyer --month 2026-02
-
-# Rename PDFs based on content (writes to ./invoices/output/)
-python3 accountant.py rename --directory ./invoices
+sudo dnf install poppler-utils     # Fedora / RHEL
+sudo apt install poppler-utils     # Debian / Ubuntu
+brew install poppler               # macOS
 ```
+
+## Setup
+
+**1. Install the toolchain.** With mise, one command gets both Python and uv:
+
+```bash
+mise trust && mise install
+```
+
+Or install uv on its own and use whatever Python 3.12+ you already have:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**2. Install dependencies.** This creates `.venv/` from the lockfile — exact
+versions, no resolution:
+
+```bash
+uv sync
+```
+
+**3. Create your config.** `config.yaml` is gitignored; never commit it.
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Fill in at minimum:
+
+```yaml
+anthropic:
+  api_key: "sk-ant-..."   # your key
+nip: "1234567890"         # your own 10-digit NIP
+```
+
+Then add a `mailboxes:` entry if you want `download`, and a `ksef:` section with
+your token if you want `ksef`. Both are optional — the commands you skip
+configuring simply cannot run.
+
+**4. Verify the install** before pointing it at anything real. The suite is
+offline and makes no API calls:
+
+```bash
+uv run pytest        # expect every test to pass (133 of them at time of writing)
+```
+
+## First run
+
+Start with KSeF for last month, which needs no mailbox setup and is read-only:
+
+```bash
+# 1. Download last month's purchase invoices (XML + rendered PDF)
+uv run python accountant.py ksef --role buyer --month 2026-06
+
+# 2. Rename them into <directory>/output/ with a consistent, sortable name
+uv run python accountant.py rename --directory ./invoices
+
+# 3. Build the Excel report. Start with --no-ai: no API calls, instant.
+uv run python accountant.py excel --month 2026-06 --no-ai
+
+# 4. Happy with the sheet? Re-run without --no-ai to fill in the
+#    "Opis faktury" column with a tax-deduction rationale per invoice.
+uv run python accountant.py excel --month 2026-06
+```
+
+The workbook lands at `./invoices/output/ksef-2026-06.xlsx`.
+
+> **Note on step 2:** `rename` is destructive to its source directory — it
+> deletes duplicates it detects. Run it on a copy the first time if that makes
+> you more comfortable. `--files` mode never deletes anything.
+
+## Command reference
+
+```bash
+# Email
+uv run python accountant.py download --mailboxes gmail_personal
+uv run python accountant.py download --all-mailboxes
+
+# KSeF (defaults to the current month)
+uv run python accountant.py ksef --role buyer
+uv run python accountant.py ksef --role buyer --month 2026-02
+uv run python accountant.py ksef --role buyer --month 2026-02 --bulk
+
+# Rename
+uv run python accountant.py rename --directory ./invoices
+uv run python accountant.py rename --files invoice1.pdf invoice2.pdf
+
+# Excel report (defaults to the previous month)
+uv run python accountant.py excel
+uv run python accountant.py excel --month 2026-06 --no-ai
+uv run python accountant.py excel --month 2026-06 --output ~/raport.xlsx
+
+# Any command: point at a different config, or turn up logging
+uv run python accountant.py --config other.yaml --log-level DEBUG excel
+```
+
+## Development
+
+```bash
+uv run pytest              # tests
+uv run black .             # format
+uv run flake8 .            # lint
+```
+
+With mise, the same gate CI runs, in CI's order:
+
+```bash
+mise run check             # black --check, flake8, then pytest
+```
+
+CI runs on every pull request across Python 3.12, 3.13 and 3.14. The lint job
+gates the test matrix, so formatting mistakes fail in seconds.
+
+Adding a dependency goes through uv so the lockfile stays honest:
+
+```bash
+uv add some-package
+uv add --dev some-dev-tool
+```
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Unable to get page count` / `PDFInfoNotInstalledError` | poppler is missing (see Requirements). Affects `rename` only. |
+| `Configuration error: Missing required config keys: ...` | `config.yaml` is missing a top-level section. Compare against `config.example.yaml`. |
+| `No KSeF configuration found in config file` | Add a `ksef:` section with your `token`. |
+| `No invoices found for YYYY-MM; no report written.` | Not an error. Either that month has no invoices, or `rename` has not moved them into `output/` yet. |
+| Excel column shows `#####` | Column too narrow in your viewer — widen it. The stored values are numbers. |
+| `error parsing config file: mise.toml ... not trusted` | Run `mise trust` once in the repo. |
+
+## Monthly workflow
+
+```bash
+uv run python accountant.py ksef   --role buyer --month 2026-06  # 1. download
+uv run python accountant.py rename --directory ./invoices        # 2. rename and index
+uv run python accountant.py excel  --month 2026-06               # 3. build the .xlsx
+```
+
+Step 3 reads the FA(3) XML sidecars already on disk — it never queries KSeF, so it
+is offline, repeatable, and can regenerate any past month. Add `--no-ai` to skip
+description generation and spend no API calls.
 
 ## Features
 
@@ -36,6 +178,11 @@ python3 accountant.py rename --directory ./invoices
   - Client invoices → `./invoices/<client-nip>/`
   - Uncertain → `./invoices/uncertain/`
 - **✨ Auto-rename**: Extracts date, company, invoice number from PDFs and writes renamed copies into `<directory>/output/` (the source directory is left with originals only)
+- **📊 Excel report for the accountant**: `excel` builds one `.xlsx` per month with a row
+  per invoice — NIP, counterparty, KSeF number, document number, date, net/VAT/gross as
+  summable numbers, currency, an AI-written tax-deduction rationale, the local filename,
+  and every line item flattened into one cell. Generated workbooks are gitignored because
+  they contain real counterparty data.
 - **🔄 Deduplication** (runs during `rename`, destructive to the source directory):
   - **Byte-identical dupes**: source PDFs are grouped by SHA256 before renaming; for each group only one copy is kept, the rest are deleted. Source PDFs whose hash already matches a file in `output/` are also deleted.
   - **Logical dupes**: after Claude extracts invoice metadata, files matching an already-processed `(company, invoice_number)` pair are skipped and the source PDF is deleted.
@@ -63,13 +210,13 @@ mailboxes:
 
 ```bash
 # Download purchase invoices for current month
-python3 accountant.py ksef --role buyer
+uv run python accountant.py ksef --role buyer
 
 # Download for a specific month
-python3 accountant.py ksef --role buyer --month 2026-02
+uv run python accountant.py ksef --role buyer --month 2026-02
 
 # Download sales invoices
-python3 accountant.py ksef --role seller --month 2026-01
+uv run python accountant.py ksef --role seller --month 2026-01
 ```
 
 ## Gmail Setup

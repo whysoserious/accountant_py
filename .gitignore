@@ -1,5 +1,4 @@
 **/CLAUDE.local.md
-__pycache__/i
 __pycache__/
 test/
 **/.claude/settings.local.json
@@ -9,6 +8,7 @@ config.yaml
 config.*.yaml
 
 # Virtual environment
+.venv/
 venv/
 env/
 ENV/
@@ -21,6 +21,14 @@ ENV/
 # Output directories and logs
 invoices/
 *.log
+
+# Generated accountant reports. These contain real counterparty names, NIPs
+# and amounts. `invoices/output/` is already covered by `invoices/` above,
+# but a non-default --directory would not be, so match the directory name
+# and the workbook extensions wherever they appear.
+output/
+*.xlsx
+*.xls
 
 # IDE
 .vscode/

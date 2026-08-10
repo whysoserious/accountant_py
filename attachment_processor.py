@@ -97,15 +97,12 @@ class AttachmentProcessor:
             for keyword in self.blacklist_keywords:
                 if keyword in text_lower:
                     self.logger.info(
-                        f"Blacklisted: '{attachment.filename}' "
-                        f"matches keyword '{keyword}'"
+                        f"Blacklisted: '{attachment.filename}' " f"matches keyword '{keyword}'"
                     )
                     return True
 
         except Exception as e:
-            self.logger.warning(
-                f"Could not check blacklist for {attachment.filename}: {e}"
-            )
+            self.logger.warning(f"Could not check blacklist for {attachment.filename}: {e}")
 
         return False
 
@@ -244,9 +241,7 @@ class AttachmentProcessor:
             extracted_nip = self._extract_any_nip(images_base64)
 
             if extracted_nip:
-                self.logger.info(
-                    f"📋 Found other NIP in {attachment.filename}: {extracted_nip}"
-                )
+                self.logger.info(f"📋 Found other NIP in {attachment.filename}: {extracted_nip}")
                 return False, extracted_nip
             else:
                 self.logger.info(f"❌ No NIP found in {attachment.filename}")
@@ -270,9 +265,7 @@ class AttachmentProcessor:
         images_base64 = []
 
         # Convert PDF to images
-        images = convert_from_bytes(
-            content, dpi=DEFAULT_DPI, first_page=1, last_page=max_pages
-        )
+        images = convert_from_bytes(content, dpi=DEFAULT_DPI, first_page=1, last_page=max_pages)
 
         for i, image in enumerate(images):
             if i >= max_pages:
@@ -303,9 +296,7 @@ class AttachmentProcessor:
             rgb_image = Image.new("RGB", image.size, (255, 255, 255))
             if image.mode == "P":
                 image = image.convert("RGBA")
-            rgb_image.paste(
-                image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None
-            )
+            rgb_image.paste(image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None)
             image = rgb_image
 
         buffered = io.BytesIO()
@@ -368,9 +359,7 @@ class AttachmentProcessor:
             # For user's NIP, organize by year-month
             year_month = email_date.strftime("%Y-%m")
             target_dir = os.path.join(output_directory, year_month)
-            self.logger.info(
-                f"📁 Organizing YOUR invoice into month folder: {year_month}"
-            )
+            self.logger.info(f"📁 Organizing YOUR invoice into month folder: {year_month}")
         elif found_nip:
             # For other NIPs (user is seller), organize by NIP
             target_dir = os.path.join(output_directory, found_nip)

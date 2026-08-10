@@ -12,7 +12,85 @@ from imap_client import IMAPClient
 from attachment_processor import AttachmentProcessor, ProcessResult
 from invoice_renamer import InvoiceRenamer
 from ksef_client import KSeFClient, KSeFConfig as KSeFClientConfig
+from ksef_excel import describe_invoices, filter_by_month, load_records, write_report
 from logger_util import setup_logger, create_download_report
+
+
+def _previous_month(today=None) -> str:
+    """
+    Return the previous calendar month as YYYY-MM.
+
+    Args:
+        today: Reference date; defaults to the current date. Injectable so the
+            December-to-January rollover can be tested without freezing time.
+    """
+    from datetime import date
+
+    today = today or date.today()
+    year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
+    return f"{year:04d}-{month:02d}"
+
+
+def excel_command(args: argparse.Namespace) -> int:
+    """
+    Build the accountant's Excel report from locally saved KSeF invoices.
+
+    Reads the FA(3) XML sidecars already on disk rather than querying KSeF, so
+    the command is offline, idempotent, and able to regenerate any past month.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    try:
+        config = load_config(args.config)
+
+        logger = setup_logger(
+            name="accountant_excel",
+            log_file=config.output.log_file,
+            level=args.log_level,
+        )
+
+        month = args.month or _previous_month()
+        directory = args.directory or config.output.main_directory
+
+        logger.info(f"Building Excel report for {month} from {directory}")
+
+        records = filter_by_month(load_records(directory, role=args.role, logger=logger), month)
+
+        if not records:
+            # An empty month is not an error -- there may simply be no invoices.
+            logger.warning(f"No invoices found for {month}; no report written.")
+            return 0
+
+        logger.info(f"{len(records)} invoice(s) in scope for {month}")
+
+        if args.no_ai:
+            logger.info("Skipping description generation (--no-ai).")
+        else:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=config.api_key)
+            logger.info("Generating invoice descriptions...")
+            describe_invoices(records, client, logger)
+
+        output_path = args.output or os.path.join(directory, "output", f"ksef-{month}.xlsx")
+        write_report(records, output_path)
+        logger.info(f"Report written to: {output_path}")
+
+        return 0
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"Could not write the report: {e}", file=sys.stderr)
+        return 1
 
 
 def download_command(args: argparse.Namespace) -> int:
@@ -80,21 +158,15 @@ def download_command(args: argparse.Namespace) -> int:
                     imap_client.connect()
                 except Exception as e:
                     logger.error(f"Failed to connect to mailbox {mailbox_name}: {e}")
-                    logger.warning(
-                        f"Skipping mailbox {mailbox_name} and continuing with others..."
-                    )
+                    logger.warning(f"Skipping mailbox {mailbox_name} and continuing with others...")
                     continue
 
                 # Search and extract attachments
-                search_result = imap_client.search_and_extract_attachments(
-                    config.search
-                )
+                search_result = imap_client.search_and_extract_attachments(config.search)
                 mailbox_results[mailbox_name] = search_result
 
                 # Process each attachment
-                logger.info(
-                    f"\nProcessing {len(search_result.attachments_found)} attachments..."
-                )
+                logger.info(f"\nProcessing {len(search_result.attachments_found)} attachments...")
 
                 for attachment in search_result.attachments_found:
                     result = processor.process_attachment(
@@ -106,27 +178,21 @@ def download_command(args: argparse.Namespace) -> int:
 
             except Exception as e:
                 logger.error(f"Error processing mailbox {mailbox_name}: {e}")
-                logger.warning(
-                    f"Skipping mailbox {mailbox_name} and continuing with others..."
-                )
+                logger.warning(f"Skipping mailbox {mailbox_name} and continuing with others...")
 
             finally:
                 # Disconnect from mailbox
                 imap_client.disconnect()
 
         # Create download report
-        create_download_report(
-            mailbox_results, all_process_results, config.output.log_file
-        )
+        create_download_report(mailbox_results, all_process_results, config.output.log_file)
 
         logger.info("Download process completed successfully!")
         return 0
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(
-            "\nMake sure your config file exists. See config.example.yaml for reference."
-        )
+        print("\nMake sure your config file exists. See config.example.yaml for reference.")
         return 1
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -162,9 +228,7 @@ def ksef_command(args: argparse.Namespace) -> int:
 
         if not config.ksef:
             logger.error("No KSeF configuration found in config file.")
-            logger.error(
-                "Add a 'ksef' section to your config. See config.example.yaml."
-            )
+            logger.error("Add a 'ksef' section to your config. See config.example.yaml.")
             return 1
 
         ksef_config = KSeFClientConfig(
@@ -278,9 +342,7 @@ def rename_command(args: argparse.Namespace) -> int:
             return 1
 
         # Summary
-        logger.info(
-            f"\nSummary: Processed {processed_count} files with {error_count} errors."
-        )
+        logger.info(f"\nSummary: Processed {processed_count} files with {error_count} errors.")
 
         return 0 if error_count == 0 else 1
 
@@ -316,6 +378,12 @@ Examples:
 
   # Rename specific files
   python3 accountant.py rename --config config.yaml --files invoice1.pdf invoice2.pdf
+
+  # Build the accountant's Excel report for a month
+  python3 accountant.py excel --month 2026-06
+
+  # Build it without spending API calls on descriptions
+  python3 accountant.py excel --month 2026-06 --no-ai
         """,
     )
 
@@ -337,9 +405,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Download command
-    download_parser = subparsers.add_parser(
-        "download", help="Download invoices from email"
-    )
+    download_parser = subparsers.add_parser("download", help="Download invoices from email")
     download_group = download_parser.add_mutually_exclusive_group(required=True)
     download_group.add_argument(
         "--mailboxes",
@@ -377,13 +443,44 @@ Examples:
     )
 
     # Rename command
-    rename_parser = subparsers.add_parser(
-        "rename", help="Rename invoice files based on content"
-    )
+    rename_parser = subparsers.add_parser("rename", help="Rename invoice files based on content")
     rename_group = rename_parser.add_mutually_exclusive_group(required=True)
     rename_group.add_argument("--files", nargs="+", help="List of PDF files to rename")
-    rename_group.add_argument(
-        "--directory", "-d", help="Directory containing PDF files to rename"
+    rename_group.add_argument("--directory", "-d", help="Directory containing PDF files to rename")
+
+    # Excel command
+    excel_parser = subparsers.add_parser(
+        "excel",
+        help="Build the accountant's Excel report from downloaded KSeF invoices",
+    )
+    excel_parser.add_argument(
+        "--month",
+        type=str,
+        default=None,
+        help="Month to report on in YYYY-MM format (default: previous month)",
+    )
+    excel_parser.add_argument(
+        "--directory",
+        "-d",
+        default=None,
+        help="Directory to scan for invoice XML (default: output.main_directory from config)",
+    )
+    excel_parser.add_argument(
+        "--role",
+        choices=["buyer", "seller"],
+        default="buyer",
+        help="Whose counterparty to report: buyer reports sellers (default: buyer)",
+    )
+    excel_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Path for the .xlsx file (default: <directory>/output/ksef-<month>.xlsx)",
+    )
+    excel_parser.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Leave the description column empty instead of generating it",
     )
 
     # Parse arguments
@@ -407,6 +504,8 @@ Examples:
         exit_code = ksef_command(args)
     elif args.command == "rename":
         exit_code = rename_command(args)
+    elif args.command == "excel":
+        exit_code = excel_command(args)
     else:
         parser.print_help()
         exit_code = 1

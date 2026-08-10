@@ -129,9 +129,7 @@ def load_config(config_path: str) -> Config:
         required_mb_keys = ["host", "port", "username", "password"]
         missing_mb_keys = [key for key in required_mb_keys if key not in mb_config]
         if missing_mb_keys:
-            raise ValueError(
-                f"Missing keys in mailbox '{name}': {', '.join(missing_mb_keys)}"
-            )
+            raise ValueError(f"Missing keys in mailbox '{name}': {', '.join(missing_mb_keys)}")
 
         mailboxes[name] = MailboxConfig(
             name=name,
@@ -146,9 +144,7 @@ def load_config(config_path: str) -> Config:
     output_data = config_data["output"]
     output = OutputConfig(
         main_directory=output_data.get("main_directory", "./invoices"),
-        uncertain_directory=output_data.get(
-            "uncertain_directory", "./invoices/uncertain"
-        ),
+        uncertain_directory=output_data.get("uncertain_directory", "./invoices/uncertain"),
         log_file=output_data.get("log_file", "./invoice_download.log"),
     )
 
@@ -240,9 +236,7 @@ If you can't find some information, use "Unknown" as the value."""
     )
 
 
-def validate_mailbox_names(
-    config: Config, requested_mailboxes: Optional[List[str]]
-) -> List[str]:
+def validate_mailbox_names(config: Config, requested_mailboxes: Optional[List[str]]) -> List[str]:
     """
     Validate that requested mailboxes exist in config.
 
@@ -267,8 +261,7 @@ def validate_mailbox_names(
 
     if missing:
         raise ValueError(
-            f"Unknown mailboxes: {', '.join(missing)}. "
-            f"Available: {', '.join(available)}"
+            f"Unknown mailboxes: {', '.join(missing)}. " f"Available: {', '.join(available)}"
         )
 
     return requested_mailboxes
