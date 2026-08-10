@@ -14,15 +14,20 @@ class TestExtractKsefNumber:
     """The KSeF reference number is parsed straight out of the FA(3) bytes."""
 
     def test_reads_bare_tag(self):
-        xml = build_fa3_xml(ksef_number=KSEF_NUMBER)
+        xml = build_fa3_xml(ksef_number=KSEF_NUMBER, include_ksef_number=True)
         assert KSeFClient._extract_ksef_number_from_xml(xml) == KSEF_NUMBER
 
     def test_reads_namespace_prefixed_tag(self):
-        xml = build_fa3_xml(ksef_number=KSEF_NUMBER, prefix="tns:")
+        xml = build_fa3_xml(ksef_number=KSEF_NUMBER, include_ksef_number=True, prefix="tns:")
         assert KSeFClient._extract_ksef_number_from_xml(xml) == KSEF_NUMBER
 
-    def test_returns_none_when_element_absent(self):
-        xml = build_fa3_xml(include_ksef_number=False)
+    def test_returns_none_for_a_realistic_document(self):
+        """
+        Real FA(3) documents carry no KSeF reference number, so the default
+        fixture has none either. Bulk export relies on the ZIP entry name in
+        exactly this case.
+        """
+        xml = build_fa3_xml()
         assert KSeFClient._extract_ksef_number_from_xml(xml) is None
 
     def test_tolerates_surrounding_whitespace(self):

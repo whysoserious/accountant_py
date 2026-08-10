@@ -151,6 +151,8 @@ uv add --dev some-dev-tool
 | `Configuration error: Missing required config keys: ...` | `config.yaml` is missing a top-level section. Compare against `config.example.yaml`. |
 | `No KSeF configuration found in config file` | Add a `ksef:` section with your `token`. |
 | `No invoices found for YYYY-MM; no report written.` | Not an error. Either that month has no invoices, or `rename` has not moved them into `output/` yet. |
+| `N invoice(s) have no KSeF number available from any source` | The KSeF number is not stored in the invoice XML — it comes from KSeF metadata. Invoices downloaded before the manifest existed only have it if their PDF rendered. Re-run `ksef` for that month to record it. |
+| `N invoice(s) have no rendered PDF` | PDF rendering failed when those invoices were downloaded, so the report names their `.xml`. Re-run `ksef` for that month to retry rendering. |
 | Excel column shows `#####` | Column too narrow in your viewer — widen it. The stored values are numbers. |
 | `error parsing config file: mise.toml ... not trusted` | Run `mise trust` once in the repo. |
 

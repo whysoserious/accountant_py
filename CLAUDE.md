@@ -41,6 +41,10 @@ matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 - KSeF auth: token-based via ksef2 library, XML→PDF rendering done locally
 - Excel report: 12 columns (the accountant's 10, then `Nazwa pliku` and `pozycje`).
   Built from local XML only — never queries KSeF. `--no-ai` skips description generation.
+- **The KSeF number is not in the FA(3) XML.** It is assigned by KSeF and returned in
+  metadata, so `ksef` records it in a `ksef-numbers.json` manifest per month, keyed by
+  invoice identity (seller NIP + invoice number + issue date) so `rename` cannot orphan
+  it. `excel` resolves it from the XML, then the manifest, then the rendered PDF's text.
 - **No real invoice data in the repository.** Test fixtures use invented names and
   synthetic checksum-valid NIPs. Generated `.xlsx` files are gitignored.
 
