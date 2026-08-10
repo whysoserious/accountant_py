@@ -62,8 +62,12 @@ class Position:
 
     @property
     def vat(self) -> Decimal:
-        value = self.net * Decimal(self.vat_rate) / Decimal(100)
-        return value.quantize(Decimal("0.01"))
+        """VAT for this line, or zero when the rate is a code such as 'zw'."""
+        try:
+            rate = Decimal(self.vat_rate)
+        except (ArithmeticError, ValueError):
+            return Decimal("0.00")
+        return (self.net * rate / Decimal(100)).quantize(Decimal("0.01"))
 
     @property
     def gross(self) -> Decimal:

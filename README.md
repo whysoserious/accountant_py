@@ -22,7 +22,22 @@ python3 accountant.py ksef --role buyer --month 2026-02
 
 # Rename PDFs based on content (writes to ./invoices/output/)
 python3 accountant.py rename --directory ./invoices
+
+# Build the accountant's Excel report for a month
+python3 accountant.py excel --month 2026-06
 ```
+
+## Monthly workflow
+
+```bash
+python3 accountant.py ksef  --role buyer --month 2026-06   # 1. download
+python3 accountant.py rename --directory ./invoices        # 2. rename and index
+python3 accountant.py excel  --month 2026-06               # 3. build the .xlsx
+```
+
+Step 3 reads the FA(3) XML sidecars already on disk — it never queries KSeF, so it
+is offline, repeatable, and can regenerate any past month. Add `--no-ai` to skip
+description generation and spend no API calls.
 
 ## Features
 
@@ -36,6 +51,11 @@ python3 accountant.py rename --directory ./invoices
   - Client invoices → `./invoices/<client-nip>/`
   - Uncertain → `./invoices/uncertain/`
 - **✨ Auto-rename**: Extracts date, company, invoice number from PDFs and writes renamed copies into `<directory>/output/` (the source directory is left with originals only)
+- **📊 Excel report for the accountant**: `excel` builds one `.xlsx` per month with a row
+  per invoice — NIP, counterparty, KSeF number, document number, date, net/VAT/gross as
+  summable numbers, currency, an AI-written tax-deduction rationale, the local filename,
+  and every line item flattened into one cell. Generated workbooks are gitignored because
+  they contain real counterparty data.
 - **🔄 Deduplication** (runs during `rename`, destructive to the source directory):
   - **Byte-identical dupes**: source PDFs are grouped by SHA256 before renaming; for each group only one copy is kept, the rest are deleted. Source PDFs whose hash already matches a file in `output/` are also deleted.
   - **Logical dupes**: after Claude extracts invoice metadata, files matching an already-processed `(company, invoice_number)` pair are skipped and the source PDF is deleted.
