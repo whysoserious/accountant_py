@@ -4,10 +4,9 @@
 import imaplib
 import email
 from email.message import Message
-import os
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 from dataclasses import dataclass
 from config_parser import MailboxConfig, SearchConfig
 import logging
@@ -237,7 +236,7 @@ class IMAPClient:
                 self.logger.info(f"📧 Gmail X-GM-RAW found {len(email_ids)} emails")
                 return all_email_ids
             else:
-                self.logger.warning(f"⚠️ Gmail X-GM-RAW returned 0 results")
+                self.logger.warning("⚠️ Gmail X-GM-RAW returned 0 results")
 
                 # Try alternative date formats
                 all_email_ids.update(self._try_alternative_gmail_formats(search_config, since_date))

@@ -1,0 +1,19 @@
+[flake8]
+# Match the line length black enforces via pyproject.toml.
+max-line-length = 100
+
+# E203 (whitespace before ':') and W503 (line break before binary operator)
+# contradict black's output. Deferring to black avoids an unwinnable fight.
+#
+# E501 is delegated to black as well. Black already wraps everything it can
+# split, so the only lines that still exceed the limit are long string literals
+# -- chiefly prompt text. Reflowing those would insert newlines into the prompt
+# actually sent to the model, changing behaviour to satisfy a linter.
+extend-ignore = E203, W503, E501
+
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    build,
+    dist

@@ -8,8 +8,7 @@ import re
 import base64
 import io
 from pdf2image import convert_from_path
-from PIL import Image
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Tuple
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -310,7 +309,7 @@ def process_invoice_file(file_path: str, api_key: str) -> None:
     if success:
         print(f"Success! File copied to: {os.path.basename(new_file_path)}")
     else:
-        print(f"Failed to copy file.")
+        print("Failed to copy file.")
 
 
 def main() -> None:

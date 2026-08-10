@@ -13,7 +13,6 @@ from typing import Dict, List, Set, Tuple, Optional
 import PyPDF2
 import anthropic
 from pdf2image import convert_from_path
-from PIL import Image
 from constants import (
     CLAUDE_SONNET_MODEL,
     MAX_TOKENS_CATEGORIZATION,
