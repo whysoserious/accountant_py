@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Logging utilities for accountant script."""
+
 import logging
 import sys
 from typing import Optional
@@ -52,9 +53,7 @@ def setup_logger(
     return logger
 
 
-def create_download_report(
-    mailbox_results: dict, process_results: list, log_file: str
-) -> None:
+def create_download_report(mailbox_results: dict, process_results: list, log_file: str) -> None:
     """
     Create a detailed download report.
 
@@ -115,9 +114,7 @@ def create_download_report(
         print("-" * 70)
         for result in process_results:
             if result.error:
-                print(
-                    f"  - {result.attachment.filename}: {result.error}"
-                )
+                print(f"  - {result.attachment.filename}: {result.error}")
 
     print("\n" + "=" * 70)
     print(f"Detailed log saved to: {log_file}")

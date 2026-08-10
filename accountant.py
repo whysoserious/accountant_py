@@ -80,21 +80,15 @@ def download_command(args: argparse.Namespace) -> int:
                     imap_client.connect()
                 except Exception as e:
                     logger.error(f"Failed to connect to mailbox {mailbox_name}: {e}")
-                    logger.warning(
-                        f"Skipping mailbox {mailbox_name} and continuing with others..."
-                    )
+                    logger.warning(f"Skipping mailbox {mailbox_name} and continuing with others...")
                     continue
 
                 # Search and extract attachments
-                search_result = imap_client.search_and_extract_attachments(
-                    config.search
-                )
+                search_result = imap_client.search_and_extract_attachments(config.search)
                 mailbox_results[mailbox_name] = search_result
 
                 # Process each attachment
-                logger.info(
-                    f"\nProcessing {len(search_result.attachments_found)} attachments..."
-                )
+                logger.info(f"\nProcessing {len(search_result.attachments_found)} attachments...")
 
                 for attachment in search_result.attachments_found:
                     result = processor.process_attachment(
@@ -106,27 +100,21 @@ def download_command(args: argparse.Namespace) -> int:
 
             except Exception as e:
                 logger.error(f"Error processing mailbox {mailbox_name}: {e}")
-                logger.warning(
-                    f"Skipping mailbox {mailbox_name} and continuing with others..."
-                )
+                logger.warning(f"Skipping mailbox {mailbox_name} and continuing with others...")
 
             finally:
                 # Disconnect from mailbox
                 imap_client.disconnect()
 
         # Create download report
-        create_download_report(
-            mailbox_results, all_process_results, config.output.log_file
-        )
+        create_download_report(mailbox_results, all_process_results, config.output.log_file)
 
         logger.info("Download process completed successfully!")
         return 0
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(
-            "\nMake sure your config file exists. See config.example.yaml for reference."
-        )
+        print("\nMake sure your config file exists. See config.example.yaml for reference.")
         return 1
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -162,9 +150,7 @@ def ksef_command(args: argparse.Namespace) -> int:
 
         if not config.ksef:
             logger.error("No KSeF configuration found in config file.")
-            logger.error(
-                "Add a 'ksef' section to your config. See config.example.yaml."
-            )
+            logger.error("Add a 'ksef' section to your config. See config.example.yaml.")
             return 1
 
         ksef_config = KSeFClientConfig(
@@ -278,9 +264,7 @@ def rename_command(args: argparse.Namespace) -> int:
             return 1
 
         # Summary
-        logger.info(
-            f"\nSummary: Processed {processed_count} files with {error_count} errors."
-        )
+        logger.info(f"\nSummary: Processed {processed_count} files with {error_count} errors.")
 
         return 0 if error_count == 0 else 1
 
@@ -337,9 +321,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Download command
-    download_parser = subparsers.add_parser(
-        "download", help="Download invoices from email"
-    )
+    download_parser = subparsers.add_parser("download", help="Download invoices from email")
     download_group = download_parser.add_mutually_exclusive_group(required=True)
     download_group.add_argument(
         "--mailboxes",
@@ -377,14 +359,10 @@ Examples:
     )
 
     # Rename command
-    rename_parser = subparsers.add_parser(
-        "rename", help="Rename invoice files based on content"
-    )
+    rename_parser = subparsers.add_parser("rename", help="Rename invoice files based on content")
     rename_group = rename_parser.add_mutually_exclusive_group(required=True)
     rename_group.add_argument("--files", nargs="+", help="List of PDF files to rename")
-    rename_group.add_argument(
-        "--directory", "-d", help="Directory containing PDF files to rename"
-    )
+    rename_group.add_argument("--directory", "-d", help="Directory containing PDF files to rename")
 
     # Parse arguments
     args = parser.parse_args()
