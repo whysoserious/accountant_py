@@ -3,19 +3,20 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
-- Environment setup: `python3 -m venv venv && source venv/bin/activate && pip3 install -r requirements.txt`
-- Download invoices from email: `python3 accountant.py download --all-mailboxes`
-- Download invoices from KSeF: `python3 accountant.py ksef --role buyer --month 2026-03`
-- Rename invoices: `python3 accountant.py rename --directory ./invoices`
-- Build accountant Excel report: `python3 accountant.py excel --month 2026-06`
-- Compile check: `python3 -m py_compile accountant.py && echo "OK"`
-- Install dev tooling: `pip3 install -r requirements-dev.txt`
-- Run tests: `pytest`
-- Format code: `black .`
-- Lint code: `flake8 .`
+- Environment setup: `uv sync` (do not use pip; dependencies live in `pyproject.toml` and are locked in `uv.lock`)
+- Add a dependency: `uv add <pkg>` — never edit `pyproject.toml` deps by hand without re-running `uv lock`
+- Download invoices from email: `uv run python accountant.py download --all-mailboxes`
+- Download invoices from KSeF: `uv run python accountant.py ksef --role buyer --month 2026-03`
+- Rename invoices: `uv run python accountant.py rename --directory ./invoices`
+- Build accountant Excel report: `uv run python accountant.py excel --month 2026-06`
+- Compile check: `uv run python -m py_compile accountant.py && echo "OK"`
+- Run tests: `uv run pytest`
+- Format code: `uv run black .`
+- Lint code: `uv run flake8 .`
 
-CI runs `black --check`, `flake8`, then `pytest` on every pull request. Run all
-three locally before pushing; the lint job gates the test matrix.
+CI runs `uv run black --check`, `uv run flake8`, then `uv run pytest` on every
+pull request. Run all three locally before pushing; the lint job gates the test
+matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 
 ## Architecture
 - `accountant.py` - Main entry point with CLI subcommands (download, ksef, rename, excel)

@@ -1,3 +1,41 @@
+[project]
+name = "accountant-py"
+version = "0.1.0"
+description = "Download, rename and report on Polish invoices from email and KSeF"
+# Floor set by ksef2, which publishes no wheel for 3.11 or earlier.
+requires-python = ">=3.12"
+
+dependencies = [
+    "PyPDF2",
+    "anthropic",
+    "pdf2image",
+    "Pillow",
+    "PyYAML",
+    "ksef2",
+    "fpdf2",
+    "qrcode[pil]",
+    "openpyxl",
+]
+
+[dependency-groups]
+# Installed by `uv sync` for development, excluded by `uv sync --no-dev`.
+#
+# black and flake8 are pinned exactly: black's formatting changes between
+# releases, so a floating version would let CI and a developer's machine
+# disagree about what "formatted" means.
+dev = [
+    "black==26.5.1",
+    "flake8==7.3.0",
+    "pytest>=9.0",
+]
+
+# The project keeps its modules at the repository root rather than in a package
+# directory, so there is nothing for a build backend to install. uv treats this
+# as a virtual project: it manages the environment and the lockfile without
+# trying to build a distribution.
+[tool.uv]
+package = false
+
 [tool.black]
 # CLAUDE.md specifies a 100-character maximum line length.
 line-length = 100

@@ -1,0 +1,23 @@
+# Toolchain pinning. mise provides the interpreter and uv; uv owns the
+# dependencies (pyproject.toml + uv.lock). Run `mise install` once, then
+# `uv sync`.
+[tools]
+python = "3.14"
+uv = "latest"
+
+# Task shortcuts mirroring the CI gate, in the same order CI runs them.
+[tasks.fmt]
+description = "Format the codebase"
+run = "uv run black ."
+
+[tasks.lint]
+description = "Check formatting and lint (as CI does)"
+run = ["uv run black --check --diff .", "uv run flake8 ."]
+
+[tasks.test]
+description = "Run the test suite"
+run = "uv run pytest"
+
+[tasks.check]
+description = "Full local gate before pushing"
+depends = ["lint", "test"]

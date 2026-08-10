@@ -1,8 +1,0 @@
-# Development and CI dependencies.
-#
-# Versions are pinned exactly: black's formatting changes between releases, so
-# an unpinned black would let CI and a developer's machine disagree about what
-# "formatted" means.
-black==26.5.1
-flake8==7.3.0
-pytest==9.0.3
