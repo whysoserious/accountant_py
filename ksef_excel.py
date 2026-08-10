@@ -62,6 +62,14 @@ MONEY_COLUMNS = (6, 7, 8)
 MONEY_FORMAT = "#,##0.00"
 MAX_TOKENS_DESCRIPTION = 200
 
+# Header colours encode provenance rather than decorate: everything taken from
+# the invoice or the filesystem is navy, and the one column written by a model
+# is amber, so the accountant can see at a glance which cells to sanity-check.
+HEADER_FILL_SOURCED = "1F3864"
+HEADER_FILL_GENERATED = "7F6000"
+HEADER_FONT_COLOUR = "FFFFFF"
+HEADER_ROW_HEIGHT = 32
+
 DESCRIPTION_PROMPT = """Jesteś księgowym. Na podstawie danych faktury zakupowej napisz
 krótkie uzasadnienie, czego dotyczy wydatek w działalności gospodarczej — tak, aby
 posłużyło jako podstawa odliczenia podatkowego.
@@ -495,16 +503,25 @@ def filter_by_month(records: List[InvoiceRecord], month: Optional[str]) -> List[
 def build_workbook(records: List[InvoiceRecord]):
     """Assemble the report workbook. Requires no API access."""
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Faktury"
 
     sheet.append(COLUMN_HEADERS)
-    for cell in sheet[1]:
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(vertical="top")
+
+    sourced_fill = PatternFill("solid", fgColor=HEADER_FILL_SOURCED)
+    generated_fill = PatternFill("solid", fgColor=HEADER_FILL_GENERATED)
+    header_font = Font(bold=True, color=HEADER_FONT_COLOUR, size=11)
+    header_border = Border(bottom=Side(style="thin", color=HEADER_FILL_SOURCED))
+
+    for column, cell in enumerate(sheet[1], start=1):
+        cell.font = header_font
+        cell.fill = generated_fill if column == DESCRIPTION_COLUMN else sourced_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        cell.border = header_border
+    sheet.row_dimensions[1].height = HEADER_ROW_HEIGHT
 
     for record in records:
         sheet.append(

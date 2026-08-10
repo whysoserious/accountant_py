@@ -632,3 +632,57 @@ class TestDescribeProgressLogging:
 
         assert "[1/1]" in caplog.text
         assert "Descriptions complete: 0 written, 1 failed" in caplog.text
+
+
+class TestHeaderStyling:
+    """
+    Header colour encodes provenance: navy for anything taken from the invoice
+    or the filesystem, amber for the single column a model writes.
+    """
+
+    def sheet(self):
+        return build_workbook([parse_invoice_xml(build_fa3_xml())]).active
+
+    def test_every_header_is_bold_and_white(self):
+        for cell in self.sheet()[1]:
+            assert cell.font.bold is True
+            assert cell.font.color.rgb.endswith(ksef_excel.HEADER_FONT_COLOUR)
+
+    def test_invoice_sourced_headers_share_one_fill(self):
+        sheet = self.sheet()
+        sourced = [c for i, c in enumerate(sheet[1], start=1) if i != ksef_excel.DESCRIPTION_COLUMN]
+        fills = {c.fill.fgColor.rgb for c in sourced}
+        assert len(fills) == 1, "sourced headers should all use the same colour"
+        assert fills.pop().endswith(ksef_excel.HEADER_FILL_SOURCED)
+
+    def test_the_model_written_column_is_visually_distinct(self):
+        sheet = self.sheet()
+        generated = sheet.cell(1, ksef_excel.DESCRIPTION_COLUMN)
+        sourced = sheet.cell(1, 1)
+
+        assert generated.fill.fgColor.rgb.endswith(ksef_excel.HEADER_FILL_GENERATED)
+        assert generated.fill.fgColor.rgb != sourced.fill.fgColor.rgb
+
+    def test_headers_wrap_so_long_labels_stay_readable(self):
+        for cell in self.sheet()[1]:
+            assert cell.alignment.wrap_text is True
+
+    def test_header_row_is_given_room_and_stays_frozen(self):
+        sheet = self.sheet()
+        assert sheet.row_dimensions[1].height == ksef_excel.HEADER_ROW_HEIGHT
+        assert sheet.freeze_panes == "A2"
+
+    def test_styling_survives_a_save_and_reload(self, tmp_path):
+        target = tmp_path / "styled.xlsx"
+        write_report([parse_invoice_xml(build_fa3_xml())], str(target))
+
+        sheet = load_workbook(str(target)).active
+        assert sheet.cell(1, 1).fill.fgColor.rgb.endswith(ksef_excel.HEADER_FILL_SOURCED)
+        assert sheet.cell(1, ksef_excel.DESCRIPTION_COLUMN).fill.fgColor.rgb.endswith(
+            ksef_excel.HEADER_FILL_GENERATED
+        )
+        assert sheet.cell(1, 1).font.bold is True
+
+    def test_data_rows_are_not_given_the_header_fill(self):
+        sheet = self.sheet()
+        assert sheet.cell(2, 1).font.bold is not True
