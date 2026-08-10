@@ -7,21 +7,37 @@ The report is assembled from the FA(3) XML sidecars that ``ksef`` wrote and
 command offline, idempotent, free of API rate limits, and able to regenerate any
 past month.
 
-Every XML sidecar shares its base name with its rendered PDF, so the local
-filename reported in the sheet is derived from the XML path rather than matched
-heuristically.
+Each XML sidecar shares its base name with its rendered PDF, so the filename
+reported in the sheet is derived from the XML path rather than matched
+heuristically. When rendering failed upstream there is no PDF at all, and the
+XML's own name is reported instead.
+
+The KSeF reference number needs special handling: it is assigned by the KSeF
+system and does **not** appear anywhere in the FA(3) document, so it cannot be
+parsed out of the invoice. It is resolved in three steps, most authoritative
+first -- the XML itself (in case a future schema carries it), the manifest that
+`ksef` writes at download time, then the text of the rendered PDF, which prints
+it. The last path exists to recover invoices downloaded before the manifest did.
 """
 
 import glob
+import json
 import logging
 import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from constants import CLAUDE_SONNET_MODEL, DEFAULT_TEMPERATURE
+
+# A KSeF reference number looks like NIP-YYYYMMDD-XXXXXXXXXXXX-XX.
+KSEF_NUMBER_PATTERN = re.compile(r"\b\d{10}-\d{8}-[0-9A-F]{12}-[0-9A-F]{2}\b", re.IGNORECASE)
+
+# Written by `ksef` next to the invoices it saves. Keyed by invoice identity
+# rather than filename, so `rename` moving and renaming files cannot break it.
+MANIFEST_FILENAME = "ksef-numbers.json"
 
 # The accountant's ten columns keep their exact headers and order so their
 # existing process does not shift. "Nazwa pliku" and "pozycje" are appended.
@@ -88,6 +104,10 @@ class InvoiceRecord:
 
     nip: str = ""
     counterparty: str = ""
+    # Both parties are kept regardless of role: the manifest is keyed on the
+    # seller, while the report shows whichever party is the counterparty.
+    seller_nip: str = ""
+    buyer_nip: str = ""
     ksef_number: str = ""
     document_number: str = ""
     issue_date: str = ""
@@ -184,8 +204,9 @@ def parse_invoice_xml(xml_bytes: bytes, role: str = "buyer") -> InvoiceRecord:
 
     fa = _first(root, "Fa")
 
-    counterparty_element = "Podmiot1" if role == "buyer" else "Podmiot2"
-    counterparty, nip = _party(root, counterparty_element)
+    seller_name, seller_nip = _party(root, "Podmiot1")
+    buyer_name, buyer_nip = _party(root, "Podmiot2")
+    counterparty, nip = (seller_name, seller_nip) if role == "buyer" else (buyer_name, buyer_nip)
 
     positions = [
         InvoicePosition(
@@ -225,6 +246,12 @@ def parse_invoice_xml(xml_bytes: bytes, role: str = "buyer") -> InvoiceRecord:
     return InvoiceRecord(
         nip=nip,
         counterparty=counterparty,
+        seller_nip=seller_nip,
+        buyer_nip=buyer_nip,
+        # Real FA(3) documents do not carry the KSeF reference number -- it is
+        # assigned by the system and returned in metadata. This reads it when
+        # present, and load_records recovers it from the manifest or the
+        # rendered PDF when it is not.
         ksef_number=_text(root, "NumerKSeFDokumentu"),
         document_number=_text(fa, "P_2"),
         issue_date=_text(fa, "P_1"),
@@ -285,6 +312,77 @@ def format_date(value: str) -> str:
     return f"{day}.{month}.{year}"
 
 
+def manifest_key(seller_nip: str, invoice_number: str, issue_date: str) -> str:
+    """
+    Build the manifest key identifying an invoice by content, not filename.
+
+    Keying on identity rather than path is what lets `rename` move and rename
+    files without orphaning their KSeF numbers.
+    """
+    return f"{seller_nip.strip()}|{invoice_number.strip()}|{issue_date.strip()}"
+
+
+def load_ksef_manifest(directory: str, logger: Optional[logging.Logger] = None) -> Dict[str, str]:
+    """
+    Merge every ``ksef-numbers.json`` found under ``directory``.
+
+    `ksef` writes one manifest per month directory, so a report spanning
+    several directories merges several manifests.
+    """
+    log = logger or logging.getLogger(__name__)
+    merged: Dict[str, str] = {}
+
+    pattern = os.path.join(directory, "**", MANIFEST_FILENAME)
+    for path in sorted(glob.glob(pattern, recursive=True)):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                entries = json.load(handle)
+            if isinstance(entries, dict):
+                merged.update(entries)
+                log.debug(f"Read {len(entries)} KSeF number(s) from {path}")
+        except (OSError, json.JSONDecodeError) as e:
+            log.warning(f"Could not read KSeF manifest '{path}': {e}")
+
+    return merged
+
+
+def extract_ksef_number_from_pdf(pdf_path: str) -> Optional[str]:
+    """
+    Recover the KSeF reference number from a rendered PDF's text.
+
+    The renderer prints the number on the page, so this recovers it for
+    invoices downloaded before the manifest existed. Returns None if the file
+    is unreadable or contains no number-shaped string.
+    """
+    try:
+        import PyPDF2
+
+        reader = PyPDF2.PdfReader(pdf_path)
+        text = "".join((page.extract_text() or "") for page in reader.pages[:2])
+    except Exception:
+        # PyPDF2 raises a wide range of errors on damaged files; none of them
+        # should stop the report.
+        return None
+
+    match = KSEF_NUMBER_PATTERN.search(text)
+    return match.group(0) if match else None
+
+
+def _resolve_filename(xml_path: str, log: logging.Logger) -> str:
+    """
+    Report the file the accountant can actually open.
+
+    Prefers the sibling PDF. When rendering failed upstream there is no PDF at
+    all, so naming a non-existent file would be worse than naming the XML that
+    does exist.
+    """
+    pdf_path = os.path.splitext(xml_path)[0] + ".pdf"
+    if os.path.exists(pdf_path):
+        return os.path.basename(pdf_path)
+    log.debug(f"No PDF beside '{os.path.basename(xml_path)}'; reporting the XML name.")
+    return os.path.basename(xml_path)
+
+
 def load_records(
     directory: str,
     role: str = "buyer",
@@ -298,6 +396,10 @@ def load_records(
 
     A document that fails to parse is skipped with a warning: one bad invoice
     must not cost the accountant the other twenty rows.
+
+    The KSeF number is resolved in three steps, most authoritative first: the
+    XML itself, then the manifest written at download time, then the text of
+    the rendered PDF.
     """
     log = logger or logging.getLogger(__name__)
 
@@ -305,26 +407,76 @@ def load_records(
         log.warning(f"Directory not found, nothing to report: {directory}")
         return []
 
+    manifest = load_ksef_manifest(directory, logger=log)
+    if manifest:
+        log.info(f"Loaded {len(manifest)} KSeF number(s) from manifest files.")
+
+    xml_paths = sorted(glob.glob(os.path.join(directory, "**", "*.xml"), recursive=True))
+    log.info(f"Scanning {len(xml_paths)} XML file(s) under {directory}")
+
     records: List[InvoiceRecord] = []
-    for xml_path in sorted(glob.glob(os.path.join(directory, "**", "*.xml"), recursive=True)):
+    sources = {"xml": 0, "manifest": 0, "pdf": 0, "missing": 0}
+    skipped = 0
+    without_pdf = 0
+
+    for index, xml_path in enumerate(xml_paths, start=1):
+        name = os.path.basename(xml_path)
         try:
             with open(xml_path, "rb") as handle:
                 record = parse_invoice_xml(handle.read(), role=role)
         except (ValueError, OSError) as e:
-            log.warning(f"Skipping '{os.path.basename(xml_path)}': {e}")
+            skipped += 1
+            log.warning(f"[{index}/{len(xml_paths)}] Skipping '{name}': {e}")
             continue
 
         pdf_path = os.path.splitext(xml_path)[0] + ".pdf"
-        record.filename = os.path.basename(pdf_path)
         if not os.path.exists(pdf_path):
-            # PDF and XML collisions are resolved independently upstream, so the
-            # pair can drift. Report the expected name rather than drop the row.
-            log.warning(f"No PDF beside '{os.path.basename(xml_path)}'; reporting expected name.")
+            without_pdf += 1
+        record.filename = _resolve_filename(xml_path, log)
 
+        if record.ksef_number:
+            source = "xml"
+        else:
+            key = manifest_key(record.seller_nip, record.document_number, record.issue_date)
+            from_manifest = manifest.get(key)
+            if from_manifest:
+                record.ksef_number = from_manifest
+                source = "manifest"
+            else:
+                from_pdf = extract_ksef_number_from_pdf(pdf_path)
+                if from_pdf:
+                    record.ksef_number = from_pdf
+                    source = "pdf"
+                else:
+                    source = "missing"
+        sources[source] += 1
+
+        log.debug(
+            f"[{index}/{len(xml_paths)}] {record.issue_date} "
+            f"{record.document_number or '(no number)'} "
+            f"-- KSeF number from {source}"
+        )
         records.append(record)
 
     records.sort(key=lambda r: (r.issue_date, r.document_number))
-    log.info(f"Loaded {len(records)} invoice(s) from {directory}")
+
+    log.info(
+        f"Loaded {len(records)} invoice(s); KSeF number from XML {sources['xml']}, "
+        f"manifest {sources['manifest']}, PDF {sources['pdf']}, "
+        f"unresolved {sources['missing']}"
+    )
+    if skipped:
+        log.warning(f"{skipped} file(s) skipped as unparseable (run with --log-level DEBUG).")
+    if without_pdf:
+        log.warning(
+            f"{without_pdf} invoice(s) have no rendered PDF; the report names their "
+            f"XML instead (PDF rendering failed when they were downloaded)."
+        )
+    if sources["missing"]:
+        log.warning(
+            f"{sources['missing']} invoice(s) have no KSeF number available from any "
+            f"source; re-run `ksef` for those months to record it."
+        )
     return records
 
 
@@ -406,8 +558,20 @@ def describe_invoices(
 
     Failures are per-row: a failed call leaves that description empty, logs a
     warning, and never aborts the remaining invoices.
+
+    Progress is logged per invoice. This runs one sequential API call per row,
+    so on a busy month it is the slowest step by far -- without a line per item
+    it is indistinguishable from a hang.
     """
-    for record in records:
+    total = len(records)
+    failures = 0
+
+    for index, record in enumerate(records, start=1):
+        label = f"[{index}/{total}]"
+        logger.info(
+            f"{label} Describing {record.document_number or '(no number)'} "
+            f"from {record.counterparty or 'unknown'}"
+        )
         prompt = DESCRIPTION_PROMPT.format(
             counterparty=record.counterparty or "nieznany",
             net=_format_money(record.net),
@@ -424,8 +588,13 @@ def describe_invoices(
                 messages=[{"role": "user", "content": prompt}],
             )
             record.description = message.content[0].text.strip()
+            logger.info(f"{label} -> {record.description}")
         except Exception as e:
             # Deliberately broad: an SDK, network, or content error on one
             # invoice must not cost the rest of the report.
-            logger.warning(f"Description failed for '{record.document_number}': {e}")
+            failures += 1
+            logger.warning(f"{label} Description failed for '{record.document_number}': {e}")
             record.description = ""
+
+    if total:
+        logger.info(f"Descriptions complete: {total - failures} written, {failures} failed.")

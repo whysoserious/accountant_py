@@ -123,7 +123,7 @@ def build_fa3_xml(
     currency: str = "PLN",
     positions: Optional[List[Position]] = None,
     prefix: str = "",
-    include_ksef_number: bool = True,
+    include_ksef_number: bool = False,
     include_rate_totals: bool = True,
 ) -> bytes:
     """
@@ -132,7 +132,13 @@ def build_fa3_xml(
     Args:
         prefix: Namespace prefix to apply to every element, e.g. ``"tns:"``.
             Used to prove parsing is namespace-agnostic.
-        include_ksef_number: Omit the KSeF reference element entirely.
+        include_ksef_number: Add a ``NumerKSeFDokumentu`` element. **Defaults to
+            False, because real FA(3) documents do not contain one** -- the KSeF
+            reference number is assigned by the system and returned in metadata,
+            not embedded in the invoice. Verified against production documents:
+            their element set is Naglowek/Podmiot1/Podmiot2/Fa/Stopka with no
+            KSeF field at all. Set True only to exercise the code path that
+            reads the element if it ever appears.
         include_rate_totals: Omit the per-rate P_13_x/P_14_x pairs, forcing
             consumers onto the gross-minus-net fallback.
     """
@@ -213,3 +219,19 @@ def build_text_pdf(text: str) -> bytes:
     pdf.set_font("helvetica", size=12)
     pdf.cell(0, 10, text)
     return bytes(pdf.output())
+
+
+def build_ksef_pdf(ksef_number: str) -> bytes:
+    """
+    Build a PDF whose extracted text contains a KSeF reference number.
+
+    Mirrors what ksef_pdf_renderer does: the number is printed on the page, and
+    that is the only place it survives for invoices downloaded before the
+    manifest existed.
+    """
+    return build_text_pdf(f"Numer KSeF: {ksef_number}")
+
+
+def synthetic_ksef_number(nip: str = SELLER_NIP, date: str = "20260625") -> str:
+    """A fabricated but correctly shaped KSeF reference number."""
+    return f"{nip}-{date}-A1B2C3D4E5F6-7A"

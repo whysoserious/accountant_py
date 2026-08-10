@@ -7,6 +7,8 @@ at all; the description step is driven through a stub client so the prompt
 contract can be asserted without spending a token.
 """
 
+import json
+import logging
 from decimal import Decimal
 
 import pytest
@@ -15,12 +17,14 @@ from openpyxl import load_workbook
 import ksef_excel
 from ksef_excel import (
     COLUMN_HEADERS,
+    MANIFEST_FILENAME,
     build_workbook,
     describe_invoices,
     filter_by_month,
     format_date,
     format_positions,
     load_records,
+    manifest_key,
     parse_invoice_xml,
     write_report,
 )
@@ -31,8 +35,11 @@ from tests.fixtures.synthetic import (
     SELLER_NAME,
     SELLER_NIP,
     build_fa3_xml,
+    build_ksef_pdf,
+    build_text_pdf,
     default_positions,
     mixed_rate_positions,
+    synthetic_ksef_number,
 )
 
 KSEF_NUMBER = "1000000000-20260625-AAAAAAAAAAAA-01"
@@ -86,12 +93,27 @@ class TestColumnLayout:
 
 class TestParseInvoiceXml:
     def test_extracts_the_scalar_fields(self):
-        record = parse_invoice_xml(build_fa3_xml(ksef_number=KSEF_NUMBER))
+        record = parse_invoice_xml(build_fa3_xml())
 
-        assert record.ksef_number == KSEF_NUMBER
         assert record.document_number == "FS 1/2026"
         assert record.issue_date == "2026-06-25"
         assert record.currency == "PLN"
+
+    def test_realistic_document_carries_no_ksef_number(self):
+        """
+        The regression this pins: real FA(3) documents have no KSeF number, so
+        parsing alone leaves the column empty and load_records must recover it.
+        """
+        assert parse_invoice_xml(build_fa3_xml()).ksef_number == ""
+
+    def test_reads_the_ksef_number_when_the_element_is_present(self):
+        record = parse_invoice_xml(build_fa3_xml(ksef_number=KSEF_NUMBER, include_ksef_number=True))
+        assert record.ksef_number == KSEF_NUMBER
+
+    def test_captures_both_parties_regardless_of_role(self):
+        record = parse_invoice_xml(build_fa3_xml(), role="buyer")
+        assert record.seller_nip == SELLER_NIP
+        assert record.buyer_nip == BUYER_NIP
 
     def test_is_namespace_agnostic(self):
         bare = parse_invoice_xml(build_fa3_xml(ksef_number=KSEF_NUMBER))
@@ -240,11 +262,11 @@ class TestLoadRecords:
 
         assert records[0].filename == f"{stem}.pdf"
 
-    def test_keeps_the_row_when_the_pdf_is_missing(self, tmp_path, logger):
+    def test_keeps_the_row_and_names_the_xml_when_no_pdf_exists(self, tmp_path, logger):
         """
-        PDF and XML collisions are resolved independently upstream, so the pair
-        can drift. Losing an invoice over a filename mismatch is worse than
-        reporting a filename that is not on disk.
+        PDF rendering fails for some invoices, so there is genuinely no PDF to
+        name. Reporting the XML that does exist beats naming a file the
+        accountant cannot open, and both beat dropping the invoice.
         """
         out = tmp_path / "output"
         stem = "2026-06-25, Dostawca, FS 1, ksef"
@@ -253,7 +275,7 @@ class TestLoadRecords:
         records = load_records(str(tmp_path), logger=logger)
 
         assert len(records) == 1
-        assert records[0].filename == f"{stem}.pdf"
+        assert records[0].filename == f"{stem}.xml"
 
     def test_skips_an_unparseable_xml_and_continues(self, tmp_path, logger):
         out = tmp_path / "output"
@@ -435,3 +457,178 @@ class TestDescribeInvoices:
         client = StubClient()
         describe_invoices([], client, logger)
         assert client.messages.calls == []
+
+
+class TestKsefNumberResolution:
+    """
+    Real FA(3) documents carry no KSeF reference number, so it is recovered
+    from the manifest written at download time, or failing that from the text
+    of the rendered PDF.
+    """
+
+    def write_invoice(self, directory, stem, xml_bytes, pdf_bytes=None):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{stem}.xml").write_bytes(xml_bytes)
+        if pdf_bytes is not None:
+            (directory / f"{stem}.pdf").write_bytes(pdf_bytes)
+
+    def write_manifest(self, directory, entries):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / MANIFEST_FILENAME).write_text(json.dumps(entries), encoding="utf-8")
+
+    def test_manifest_key_is_stable_across_renames(self):
+        """Keyed on invoice identity, so moving or renaming files cannot orphan it."""
+        first = manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25")
+        second = manifest_key(f" {SELLER_NIP} ", " FS 1/2026 ", " 2026-06-25 ")
+        assert first == second
+
+    def test_resolves_from_the_manifest(self, tmp_path, logger):
+        number = synthetic_ksef_number()
+        out = tmp_path / "output"
+        self.write_invoice(out, "renamed-by-a-later-step", build_fa3_xml())
+        self.write_manifest(out, {manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25"): number})
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == number
+
+    def test_manifest_survives_the_file_being_renamed(self, tmp_path, logger):
+        """The manifest lives in the month directory; the invoice moved to output/."""
+        number = synthetic_ksef_number()
+        month = tmp_path / "2026-06"
+        self.write_manifest(month, {manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25"): number})
+        out = tmp_path / "output"
+        self.write_invoice(out, "2026-06-25, Dostawca, FS 1-2026, ksef", build_fa3_xml())
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == number
+
+    def test_falls_back_to_the_pdf_text(self, tmp_path, logger):
+        number = synthetic_ksef_number()
+        out = tmp_path / "output"
+        self.write_invoice(out, "legacy", build_fa3_xml(), build_ksef_pdf(number))
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == number
+
+    def test_manifest_wins_over_the_pdf(self, tmp_path, logger):
+        """The manifest comes straight from the API; PDF text is a recovery path."""
+        authoritative = synthetic_ksef_number(date="20260101")
+        from_pdf = synthetic_ksef_number(date="20261231")
+        out = tmp_path / "output"
+        self.write_invoice(out, "both", build_fa3_xml(), build_ksef_pdf(from_pdf))
+        self.write_manifest(
+            out, {manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25"): authoritative}
+        )
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == authoritative
+
+    def test_embedded_element_wins_over_everything(self, tmp_path, logger):
+        in_xml = synthetic_ksef_number(date="20260202")
+        out = tmp_path / "output"
+        self.write_invoice(
+            out,
+            "embedded",
+            build_fa3_xml(ksef_number=in_xml, include_ksef_number=True),
+            build_ksef_pdf(synthetic_ksef_number(date="20261231")),
+        )
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == in_xml
+
+    def test_stays_empty_when_no_source_has_it(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_invoice(out, "nothing", build_fa3_xml())
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == ""
+
+    def test_a_pdf_without_a_number_does_not_crash(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_invoice(out, "plain", build_fa3_xml(), build_text_pdf("Faktura bez numeru"))
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == ""
+
+    def test_a_corrupt_pdf_does_not_crash(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_invoice(out, "broken", build_fa3_xml(), b"%PDF-1.4 truncated garbage")
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert len(records) == 1
+        assert records[0].ksef_number == ""
+
+    def test_unreadable_manifest_is_survivable(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_invoice(out, "inv", build_fa3_xml())
+        (out / MANIFEST_FILENAME).write_text("{not json", encoding="utf-8")
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert len(records) == 1
+
+    def test_manifests_from_several_months_are_merged(self, tmp_path, logger):
+        june = synthetic_ksef_number(date="20260625")
+        july = synthetic_ksef_number(date="20260710")
+        self.write_manifest(
+            tmp_path / "2026-06", {manifest_key(SELLER_NIP, "FS 6", "2026-06-25"): june}
+        )
+        self.write_manifest(
+            tmp_path / "2026-07", {manifest_key(SELLER_NIP, "FS 7", "2026-07-10"): july}
+        )
+        out = tmp_path / "output"
+        self.write_invoice(out, "a", build_fa3_xml(invoice_number="FS 6", issue_date="2026-06-25"))
+        self.write_invoice(out, "b", build_fa3_xml(invoice_number="FS 7", issue_date="2026-07-10"))
+
+        found = {
+            r.document_number: r.ksef_number for r in load_records(str(tmp_path), logger=logger)
+        }
+
+        assert found == {"FS 6": june, "FS 7": july}
+
+    def test_the_column_carries_the_resolved_number(self, tmp_path, logger):
+        number = synthetic_ksef_number()
+        out = tmp_path / "output"
+        self.write_invoice(out, "inv", build_fa3_xml(), build_ksef_pdf(number))
+
+        sheet = build_workbook(load_records(str(tmp_path), logger=logger)).active
+
+        assert sheet.cell(2, 3).value == number
+
+
+class TestDescribeProgressLogging:
+    def test_logs_one_line_per_invoice_with_a_running_count(self, caplog):
+        records = [
+            parse_invoice_xml(build_fa3_xml(invoice_number="FS 1")),
+            parse_invoice_xml(build_fa3_xml(invoice_number="FS 2")),
+            parse_invoice_xml(build_fa3_xml(invoice_number="FS 3")),
+        ]
+        client = StubClient(replies=["a", "b", "c"])
+        log = logging.getLogger("progress-test")
+
+        with caplog.at_level(logging.INFO, logger="progress-test"):
+            describe_invoices(records, client, log)
+
+        text = caplog.text
+        for i in (1, 2, 3):
+            assert f"[{i}/3]" in text, f"missing progress line for invoice {i}"
+        assert "Descriptions complete: 3 written, 0 failed" in text
+
+    def test_a_failure_is_logged_against_its_own_index(self, caplog):
+        records = [parse_invoice_xml(build_fa3_xml(invoice_number="FS 1"))]
+        client = StubClient(error=RuntimeError("api unavailable"))
+        log = logging.getLogger("progress-test-fail")
+
+        with caplog.at_level(logging.INFO, logger="progress-test-fail"):
+            describe_invoices(records, client, log)
+
+        assert "[1/1]" in caplog.text
+        assert "Descriptions complete: 0 written, 1 failed" in caplog.text

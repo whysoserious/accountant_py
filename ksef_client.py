@@ -2,6 +2,7 @@
 """KSeF (Krajowy System e-Faktur) client for downloading invoices."""
 
 import io
+import json
 import logging
 import os
 import re
@@ -15,6 +16,7 @@ from ksef2 import Client, Environment
 from ksef2.core.exceptions import KSeFRateLimitError
 from ksef2.domain.models.pagination import InvoiceMetadataParams
 from ksef2.services.invoices import InvoicesFilter
+from ksef_excel import MANIFEST_FILENAME, manifest_key
 from ksef_pdf_renderer import render_invoice_pdf
 
 # KSeF API caps page_size at 100. Using the max keeps round-trips low while
@@ -488,6 +490,13 @@ class KSeFClient:
             invoices: List of KSeF invoices to save
             output_directory: Base output directory
 
+        A ``ksef-numbers.json`` manifest is written alongside each month's
+        invoices, recording the KSeF reference number against the invoice's
+        identity. The number is assigned by KSeF and does not appear anywhere in
+        the FA(3) document, so without the manifest it is lost as soon as the
+        session ends -- and the rendered PDF, which prints it, is not always
+        produced.
+
         Returns:
             List of saved file paths
         """
@@ -527,6 +536,7 @@ class KSeFClient:
                 )
 
             saved_paths.append(file_path)
+            self._record_ksef_number(month_dir, invoice)
             self.logger.info(f"Saved: {os.path.basename(file_path)}")
 
         if len(saved_paths) != len(invoices):
@@ -536,6 +546,38 @@ class KSeFClient:
             )
 
         return saved_paths
+
+    def _record_ksef_number(self, month_dir: str, invoice: KSeFInvoice) -> None:
+        """
+        Add this invoice's KSeF number to the month's manifest.
+
+        Keyed by invoice identity rather than filename, so the later `rename`
+        step can move and rename files without orphaning the number. Failing to
+        write the manifest must never lose the invoice, so errors are logged
+        rather than raised.
+        """
+        if not invoice.ksef_number:
+            return
+
+        manifest_path = os.path.join(month_dir, MANIFEST_FILENAME)
+        key = manifest_key(invoice.seller_nip, invoice.invoice_number, invoice.issue_date)
+
+        entries: Dict[str, str] = {}
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, dict):
+                    entries = loaded
+            except (OSError, json.JSONDecodeError) as e:
+                self.logger.warning(f"Rewriting unreadable manifest '{manifest_path}': {e}")
+
+        entries[key] = invoice.ksef_number
+        try:
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(entries, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError as e:
+            self.logger.warning(f"Could not write KSeF manifest '{manifest_path}': {e}")
 
     @staticmethod
     def _unique_path(path: str) -> str:
