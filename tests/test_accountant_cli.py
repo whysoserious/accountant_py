@@ -77,3 +77,126 @@ class TestSubcommandWiring:
             accountant.main()
 
         assert exc.value.code == 1
+
+
+class TestAllPipeline:
+    """
+    The `all` command chains the existing steps. These tests drive it with the
+    real step handlers stubbed out, so no download, rename or API call happens.
+    """
+
+    def stub_steps(self, monkeypatch, calls, failing=None):
+        import accountant
+
+        def make(name):
+            def handler(args):
+                calls.append((name, args))
+                return 1 if name == failing else 0
+
+            return handler
+
+        for name in ("ksef_command", "rename_command", "render_command", "excel_command"):
+            monkeypatch.setattr(accountant, name, make(name))
+
+    def run(self, monkeypatch, argv, calls, failing=None):
+        import accountant
+
+        self.stub_steps(monkeypatch, calls, failing)
+        monkeypatch.setattr(accountant, "_default_directory", lambda _: "./invoices")
+        monkeypatch.setattr("sys.argv", ["accountant.py", "all"] + argv)
+        with pytest.raises(SystemExit) as exc:
+            accountant.main()
+        return exc.value.code
+
+    def test_runs_every_step_in_order(self, monkeypatch, capsys):
+        calls = []
+        code = self.run(monkeypatch, ["--month", "2026-06"], calls)
+
+        assert code == 0
+        assert [name for name, _ in calls] == [
+            "ksef_command",
+            "rename_command",
+            "render_command",
+            "excel_command",
+        ]
+
+    def test_the_same_month_reaches_download_and_report(self, monkeypatch):
+        """
+        The individual defaults disagree -- ksef uses the current month, excel
+        the previous one -- so a pipeline must pass the month explicitly or it
+        would download one month and report another.
+        """
+        calls = []
+        self.run(monkeypatch, ["--month", "2026-06"], calls)
+
+        by_name = dict(calls)
+        assert by_name["ksef_command"].month == "2026-06"
+        assert by_name["excel_command"].month == "2026-06"
+
+    def test_without_a_month_every_step_gets_the_same_resolved_one(self, monkeypatch):
+        calls = []
+        self.run(monkeypatch, [], calls)
+
+        by_name = dict(calls)
+        assert by_name["ksef_command"].month == by_name["excel_command"].month
+        assert by_name["ksef_command"].month == _previous_month()
+
+    def test_skip_download_starts_at_rename(self, monkeypatch):
+        calls = []
+        code = self.run(monkeypatch, ["--skip-download"], calls)
+
+        assert code == 0
+        assert [name for name, _ in calls][0] == "rename_command"
+        assert "ksef_command" not in [name for name, _ in calls]
+
+    def test_stops_at_the_first_failure(self, monkeypatch):
+        calls = []
+        code = self.run(monkeypatch, [], calls, failing="rename_command")
+
+        assert code == 1
+        assert [name for name, _ in calls] == ["ksef_command", "rename_command"]
+
+    def test_propagates_the_failing_step_exit_code(self, monkeypatch):
+        calls = []
+        assert self.run(monkeypatch, [], calls, failing="ksef_command") == 1
+
+    def test_flags_are_passed_through_to_the_right_steps(self, monkeypatch):
+        calls = []
+        self.run(
+            monkeypatch,
+            ["--role", "seller", "--no-ai", "--bulk", "--output", "/tmp/r.xlsx"],
+            calls,
+        )
+
+        by_name = dict(calls)
+        assert by_name["ksef_command"].role == "seller"
+        assert by_name["ksef_command"].bulk is True
+        assert by_name["excel_command"].no_ai is True
+        assert by_name["excel_command"].output == "/tmp/r.xlsx"
+        assert by_name["excel_command"].role == "seller"
+
+    def test_rename_never_receives_a_file_list(self, monkeypatch):
+        """rename takes --files or --directory; the pipeline always uses a directory."""
+        calls = []
+        self.run(monkeypatch, [], calls)
+
+        rename_args = dict(calls)["rename_command"]
+        assert rename_args.files is None
+        assert rename_args.directory
+
+    def test_reports_progress_for_each_step(self, monkeypatch, capsys):
+        calls = []
+        self.run(monkeypatch, ["--month", "2026-06"], calls)
+
+        out = capsys.readouterr().out
+        assert "Step 1/4" in out and "Step 4/4" in out
+        assert "2026-06" in out
+
+    def test_help_lists_the_command(self, capsys, monkeypatch):
+        import accountant
+
+        monkeypatch.setattr("sys.argv", ["accountant.py", "all", "--help"])
+        with pytest.raises(SystemExit) as exc:
+            accountant.main()
+        assert exc.value.code == 0
+        assert "--skip-download" in capsys.readouterr().out
