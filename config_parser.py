@@ -6,6 +6,10 @@ import os
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
+# Imported for its default categories, keywords and prompt. ksef_excel does not
+# import this module, so there is no cycle.
+import ksef_excel
+
 
 @dataclass
 class MailboxConfig:
@@ -60,6 +64,26 @@ class KSeFConfig:
 
 
 @dataclass
+class ExcelConfig:
+    """
+    Configuration for the accountant's Excel report.
+
+    ``categories`` constrains what the model may write in the description
+    column, so the same kind of expense gets the same label every month and the
+    accountant can sort and filter on it.
+
+    ``non_deductible_keywords`` marks expenses that cannot be deducted at all.
+    Matching rows are kept in the report and labelled rather than removed, so
+    nothing silently vanishes from the accountant's file.
+    """
+
+    categories: List[str]
+    non_deductible_keywords: List[str]
+    non_deductible_label: str
+    description_prompt: str
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -70,6 +94,7 @@ class Config:
     output: OutputConfig
     prompts: PromptsConfig
     filter: FilterConfig
+    excel: "ExcelConfig"
     ksef: Optional[KSeFConfig] = None
 
 
@@ -213,6 +238,22 @@ If you can't find some information, use "Unknown" as the value."""
         blacklist_keywords=filter_data.get("blacklist_keywords", []),
     )
 
+    # Parse Excel report config (optional). Defaults live in ksef_excel so the
+    # module that uses them owns them, rather than being duplicated here.
+    excel_data = config_data.get("excel", {}) or {}
+    excel = ExcelConfig(
+        categories=excel_data.get("categories") or list(ksef_excel.DEFAULT_CATEGORIES),
+        non_deductible_keywords=(
+            excel_data.get("non_deductible_keywords")
+            if excel_data.get("non_deductible_keywords") is not None
+            else list(ksef_excel.DEFAULT_NON_DEDUCTIBLE_KEYWORDS)
+        ),
+        non_deductible_label=excel_data.get(
+            "non_deductible_label", ksef_excel.DEFAULT_NON_DEDUCTIBLE_LABEL
+        ),
+        description_prompt=excel_data.get("description_prompt", ksef_excel.DESCRIPTION_PROMPT),
+    )
+
     # Parse KSeF config (optional)
     ksef = None
     ksef_data = config_data.get("ksef")
@@ -232,6 +273,7 @@ If you can't find some information, use "Unknown" as the value."""
         output=output,
         prompts=prompts,
         filter=filter_config,
+        excel=excel,
         ksef=ksef,
     )
 

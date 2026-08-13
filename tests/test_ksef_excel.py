@@ -19,11 +19,14 @@ from ksef_excel import (
     COLUMN_HEADERS,
     MANIFEST_FILENAME,
     build_workbook,
+    deduplicate,
     describe_invoices,
     filter_by_month,
     format_date,
     format_positions,
     load_records,
+    mark_non_deductible,
+    match_non_deductible,
     manifest_key,
     parse_invoice_xml,
     write_report,
@@ -611,16 +614,16 @@ class TestDescribeProgressLogging:
             parse_invoice_xml(build_fa3_xml(invoice_number="FS 2")),
             parse_invoice_xml(build_fa3_xml(invoice_number="FS 3")),
         ]
-        client = StubClient(replies=["a", "b", "c"])
+        client = StubClient(replies=["paliwo", "paliwo", "paliwo"])
         log = logging.getLogger("progress-test")
 
         with caplog.at_level(logging.INFO, logger="progress-test"):
-            describe_invoices(records, client, log)
+            describe_invoices(records, client, log, categories=["paliwo"])
 
         text = caplog.text
         for i in (1, 2, 3):
             assert f"[{i}/3]" in text, f"missing progress line for invoice {i}"
-        assert "Descriptions complete: 3 written, 0 failed" in text
+        assert "Classification complete: 3 written" in text
 
     def test_a_failure_is_logged_against_its_own_index(self, caplog):
         records = [parse_invoice_xml(build_fa3_xml(invoice_number="FS 1"))]
@@ -631,7 +634,7 @@ class TestDescribeProgressLogging:
             describe_invoices(records, client, log)
 
         assert "[1/1]" in caplog.text
-        assert "Descriptions complete: 0 written, 1 failed" in caplog.text
+        assert "1 failed" in caplog.text
 
 
 class TestHeaderStyling:
@@ -686,3 +689,321 @@ class TestHeaderStyling:
     def test_data_rows_are_not_given_the_header_fill(self):
         sheet = self.sheet()
         assert sheet.cell(2, 1).font.bold is not True
+
+
+class TestNonDeductibleKeywords:
+    """
+    Keyword matching runs before any API call, so it is free, deterministic,
+    and works under --no-ai.
+    """
+
+    def record(self, counterparty="Dostawca", position="Usluga hostingu"):
+        from tests.fixtures.synthetic import Position
+
+        return parse_invoice_xml(
+            build_fa3_xml(seller_name=counterparty, positions=[Position(name=position)])
+        )
+
+    def test_matches_on_the_counterparty_name(self):
+        assert match_non_deductible(self.record(counterparty="Benefit Systems SA"), ["benefit"])
+
+    def test_matches_on_a_line_item(self):
+        assert match_non_deductible(self.record(position="Karta Multisport Plus"), ["multisport"])
+
+    def test_is_case_insensitive(self):
+        assert match_non_deductible(self.record(position="MULTISPORT"), ["multisport"])
+
+    def test_ignores_polish_diacritics_in_both_directions(self):
+        """Invoice text arrives both ways, so matching must tolerate either."""
+        assert match_non_deductible(self.record(position="odżywka białkowa"), ["odzywka"])
+        assert match_non_deductible(self.record(position="odzywka bialkowa"), ["odżywka"])
+
+    def test_returns_the_keyword_that_matched(self):
+        assert (
+            match_non_deductible(self.record(position="zabawka dla dziecka"), ["x", "zabawka"])
+            == "zabawka"
+        )
+
+    def test_no_match_returns_none(self):
+        assert match_non_deductible(self.record(), ["multisport"]) is None
+
+    def test_empty_keyword_list_never_matches(self):
+        assert match_non_deductible(self.record(position="multisport"), []) is None
+
+    def test_marking_sets_the_label_and_clears_deductible(self, logger):
+        records = [self.record(position="Karta Multisport")]
+
+        marked = mark_non_deductible(records, ["multisport"], label="NIE PODLEGA", logger=logger)
+
+        assert marked == 1
+        assert records[0].deductible is False
+        assert records[0].description == "NIE PODLEGA"
+
+    def test_deductible_rows_are_untouched(self, logger):
+        records = [self.record(position="Usluga hostingu")]
+
+        marked = mark_non_deductible(records, ["multisport"], logger=logger)
+
+        assert marked == 0
+        assert records[0].deductible is True
+        assert records[0].description == ""
+
+    def test_the_row_is_kept_not_dropped(self, logger):
+        """The whole point: nothing silently disappears from the sheet."""
+        records = [self.record(position="Multisport"), self.record(position="Paliwo")]
+
+        mark_non_deductible(records, ["multisport"], logger=logger)
+
+        assert len(records) == 2, "a non-deductible invoice must remain in the report"
+
+
+class TestCategoryClassification:
+    def test_uses_the_category_returned_by_the_model(self, logger):
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["paliwo"])
+
+        describe_invoices(records, client, logger, categories=["paliwo", "meble biurowe"])
+
+        assert records[0].description == "paliwo"
+
+    def test_the_prompt_lists_every_allowed_category(self, logger):
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["paliwo"])
+
+        describe_invoices(records, client, logger, categories=["paliwo", "meble biurowe"])
+
+        prompt = client.messages.calls[0]["messages"][0]["content"]
+        assert "- paliwo" in prompt
+        assert "- meble biurowe" in prompt
+
+    def test_normalises_a_reply_back_to_the_configured_wording(self, logger):
+        """A reply differing only in case or diacritics still yields the exact label."""
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["USLUGA TELEKOMUNIKACYJNA"])
+
+        describe_invoices(records, client, logger, categories=["usługa telekomunikacyjna"])
+
+        assert records[0].description == "usługa telekomunikacyjna"
+
+    def test_an_off_list_reply_is_kept_and_warned_about(self, logger, caplog):
+        """Discarding it would lose the classification; the warning names the gap."""
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["cos zupelnie innego"])
+        log = logging.getLogger("offlist")
+
+        with caplog.at_level(logging.WARNING, logger="offlist"):
+            describe_invoices(records, client, log, categories=["paliwo"])
+
+        assert records[0].description == "cos zupelnie innego"
+        assert "not in the configured categories" in caplog.text
+
+    def test_model_can_mark_an_invoice_non_deductible(self, logger):
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["NIE PODLEGA ODLICZENIU"])
+
+        describe_invoices(records, client, logger, categories=["paliwo"])
+
+        assert records[0].deductible is False
+        assert records[0].description == "NIE PODLEGA ODLICZENIU"
+
+    def test_already_marked_rows_cost_no_api_call(self, logger):
+        """The cheap deterministic check must not be paid for twice."""
+        records = [parse_invoice_xml(build_fa3_xml()) for _ in range(2)]
+        records[0].deductible = False
+        records[0].description = "NIE PODLEGA ODLICZENIU"
+        client = StubClient(replies=["paliwo"])
+
+        describe_invoices(records, client, logger, categories=["paliwo"])
+
+        assert len(client.messages.calls) == 1, "the pre-marked row should be skipped"
+        assert records[0].description == "NIE PODLEGA ODLICZENIU"
+        assert records[1].description == "paliwo"
+
+    def test_the_non_deductible_label_appears_in_the_prompt(self, logger):
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["paliwo"])
+
+        describe_invoices(
+            records, client, logger, categories=["paliwo"], non_deductible_label="POMIN"
+        )
+
+        assert "POMIN" in client.messages.calls[0]["messages"][0]["content"]
+
+    def test_a_custom_prompt_template_is_used(self, logger):
+        records = [parse_invoice_xml(build_fa3_xml())]
+        client = StubClient(replies=["paliwo"])
+
+        describe_invoices(
+            records,
+            client,
+            logger,
+            categories=["paliwo"],
+            prompt_template="WLASNY {counterparty} {categories} {non_deductible_label}",
+        )
+
+        assert client.messages.calls[0]["messages"][0]["content"].startswith("WLASNY")
+
+
+class TestNonDeductibleStyling:
+    def test_the_marked_cell_is_highlighted_red(self):
+        deductible = parse_invoice_xml(build_fa3_xml(invoice_number="FS 1"))
+        deductible.description = "paliwo"
+        blocked = parse_invoice_xml(build_fa3_xml(invoice_number="FS 2"))
+        blocked.deductible = False
+        blocked.description = "NIE PODLEGA ODLICZENIU"
+
+        sheet = build_workbook([deductible, blocked]).active
+
+        normal = sheet.cell(2, ksef_excel.DESCRIPTION_COLUMN)
+        marked = sheet.cell(3, ksef_excel.DESCRIPTION_COLUMN)
+        assert marked.font.bold is True
+        assert marked.font.color.rgb.endswith(ksef_excel.NON_DEDUCTIBLE_FONT_COLOUR)
+        assert marked.fill.fgColor.rgb.endswith(ksef_excel.NON_DEDUCTIBLE_FILL)
+        assert normal.font.bold is not True
+
+    def test_both_rows_are_present_in_the_sheet(self):
+        blocked = parse_invoice_xml(build_fa3_xml())
+        blocked.deductible = False
+        sheet = build_workbook([parse_invoice_xml(build_fa3_xml()), blocked]).active
+        assert sheet.max_row == 3
+
+
+class TestExcelConfigDefaults:
+    def test_config_without_an_excel_section_gets_defaults(self, tmp_path):
+        from config_parser import load_config
+        from tests.test_config_parser import MINIMAL_CONFIG, write_config
+
+        config = load_config(write_config(tmp_path, MINIMAL_CONFIG))
+
+        assert config.excel.categories == ksef_excel.DEFAULT_CATEGORIES
+        assert "multisport" in config.excel.non_deductible_keywords
+        assert config.excel.non_deductible_label == ksef_excel.DEFAULT_NON_DEDUCTIBLE_LABEL
+        assert "{categories}" in config.excel.description_prompt
+
+    def test_an_explicit_empty_keyword_list_disables_matching(self, tmp_path):
+        import textwrap
+
+        from config_parser import load_config
+        from tests.test_config_parser import MINIMAL_CONFIG, write_config
+
+        body = MINIMAL_CONFIG + textwrap.dedent("""
+            excel:
+              non_deductible_keywords: []
+            """)
+        config = load_config(write_config(tmp_path, body))
+        assert config.excel.non_deductible_keywords == []
+
+    def test_categories_and_label_can_be_overridden(self, tmp_path):
+        import textwrap
+
+        from config_parser import load_config
+        from tests.test_config_parser import MINIMAL_CONFIG, write_config
+
+        body = MINIMAL_CONFIG + textwrap.dedent("""
+            excel:
+              categories:
+                - wlasna kategoria
+              non_deductible_label: "POMIN"
+            """)
+        config = load_config(write_config(tmp_path, body))
+        assert config.excel.categories == ["wlasna kategoria"]
+        assert config.excel.non_deductible_label == "POMIN"
+
+
+class TestDeduplication:
+    """
+    The same invoice lands on disk twice -- once as `..., ksef.pdf` from the
+    download, once as a separately renamed copy. Reporting both double-counts
+    the cost, so the accountant's totals come out wrong.
+    """
+
+    def record(self, number="FS 1/2026", filename="a.pdf", ksef="", date="2026-06-25"):
+        r = parse_invoice_xml(build_fa3_xml(invoice_number=number, issue_date=date))
+        r.filename = filename
+        r.ksef_number = ksef
+        return r
+
+    def test_collapses_two_copies_of_one_invoice(self, logger):
+        records = [self.record(filename="x, ksef.pdf"), self.record(filename="x, leasing.pdf")]
+
+        result = deduplicate(records, logger=logger)
+
+        assert len(result) == 1
+
+    def test_different_invoices_are_both_kept(self, logger):
+        records = [self.record(number="FS 1"), self.record(number="FS 2")]
+        assert len(deduplicate(records, logger=logger)) == 2
+
+    def test_same_number_different_date_is_not_merged(self, logger):
+        records = [self.record(date="2026-06-25"), self.record(date="2026-07-25")]
+        assert len(deduplicate(records, logger=logger)) == 2
+
+    def test_prefers_the_copy_with_a_resolved_ksef_number(self, logger):
+        number = synthetic_ksef_number()
+        records = [
+            self.record(filename="without.pdf", ksef=""),
+            self.record(filename="with.pdf", ksef=number),
+        ]
+
+        result = deduplicate(records, logger=logger)
+
+        assert result[0].ksef_number == number
+        assert result[0].filename == "with.pdf"
+
+    def test_prefers_a_pdf_over_an_xml_only_copy(self, logger):
+        records = [self.record(filename="only.xml"), self.record(filename="real.pdf")]
+
+        result = deduplicate(records, logger=logger)
+
+        assert result[0].filename == "real.pdf"
+
+    def test_the_choice_is_deterministic_regardless_of_input_order(self, logger):
+        a = self.record(filename="aaa.pdf")
+        b = self.record(filename="bbb.pdf")
+
+        first = deduplicate([a, b], logger=logger)[0].filename
+        second = deduplicate([b, a], logger=logger)[0].filename
+
+        assert first == second
+
+    def test_invoices_without_a_number_are_never_merged(self, logger):
+        """An empty key would collapse unrelated invoices into one."""
+        records = [
+            self.record(number="", filename="a.pdf"),
+            self.record(number="", filename="b.pdf"),
+        ]
+        assert len(deduplicate(records, logger=logger)) == 2
+
+    def test_logs_which_file_was_dropped(self, caplog):
+        log = logging.getLogger("dedup-log")
+        records = [self.record(filename="kept.pdf"), self.record(filename="dropped.xml")]
+
+        with caplog.at_level(logging.INFO, logger="dedup-log"):
+            deduplicate(records, log)
+
+        assert "kept.pdf" in caplog.text and "dropped.xml" in caplog.text
+        assert "double-counted" in caplog.text
+
+    def test_totals_are_not_double_counted(self, logger):
+        """The reason this exists: the summed column must be right."""
+        records = [
+            self.record(number="FS 1", filename="a, ksef.pdf"),
+            self.record(number="FS 1", filename="a, opis.pdf"),
+            self.record(number="FS 2", filename="b, ksef.pdf"),
+        ]
+
+        result = deduplicate(records, logger=logger)
+
+        assert sum(r.gross for r in result) == Decimal("492.00")
+
+    def test_load_records_deduplicates_files_on_disk(self, tmp_path, logger):
+        out = tmp_path / "output"
+        out.mkdir(parents=True)
+        xml = build_fa3_xml(invoice_number="FS 1/2026")
+        for stem in ("2026-06-25, Firma, FS 1-2026, ksef", "2026-06-25, Firma, FS 1-2026, leasing"):
+            (out / f"{stem}.xml").write_bytes(xml)
+            (out / f"{stem}.pdf").write_bytes(b"%PDF")
+
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert len(records) == 1, "the same invoice saved twice must yield one row"

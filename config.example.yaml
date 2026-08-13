@@ -144,3 +144,51 @@ prompts:
     If the file is not an invoice (e.g. bank statement) then please rename it as "Bank statement" or other relevant filename.
 
     If you can't find some information, use "Unknown" as the value.
+
+# Optional: the accountant's Excel report (`accountant.py excel`)
+excel:
+  # The description column ("Opis faktury") must be one of these, exactly as
+  # written. A fixed list keeps the same expense labelled the same way every
+  # month, so the accountant can sort and filter on it. Add a category whenever
+  # a run warns that a reply was off-list.
+  categories:
+    - paliwo
+    - usługa telekomunikacyjna
+    - meble biurowe
+    - elektronika do pracy
+    - rata leasingowa za sprzęt
+    - naprawy i utrzymanie samochodu
+    - wynajem przestrzeni biurowej
+    - materiały fotograficzne/poligraficzne
+    - narzędzia i materiały biurowe
+    - obsługa księgowa działalności
+    - usługi związane z wynajmem statku powietrznego
+
+  # Expenses that cannot be a cost of earning revenue. Matched against the
+  # counterparty name and the line items, ignoring case and Polish diacritics
+  # (so "odzywka" matches "odżywka").
+  #
+  # Matching invoices are KEPT in the report and labelled, not removed -- the
+  # accountant sees them highlighted in red and excludes them when totalling.
+  # Nothing disappears silently.
+  non_deductible_keywords:
+    - multisport
+    - benefit systems
+    - karta sportowa
+    - jedzenie
+    - catering
+    - restauracja
+    - posiłek
+    - odżywka
+    - suplement
+    - zabawka
+
+  # Text written into the description column for a non-deductible expense.
+  non_deductible_label: "NIE PODLEGA ODLICZENIU"
+
+  # Optional: override the classification prompt entirely. Available
+  # placeholders: {counterparty} {net} {vat} {gross} {currency} {positions}
+  # {categories} {non_deductible_label}
+  #
+  # description_prompt: |
+  #   Jesteś księgowym. Zaklasyfikuj wydatek...

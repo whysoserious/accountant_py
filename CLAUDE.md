@@ -41,6 +41,16 @@ matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 - KSeF auth: token-based via ksef2 library, XML→PDF rendering done locally
 - Excel report: 12 columns (the accountant's 10, then `Nazwa pliku` and `pozycje`).
   Built from local XML only — never queries KSeF. `--no-ai` skips description generation.
+- Description column uses a **fixed taxonomy** from `excel.categories`, so the same
+  expense gets the same label every month. An off-list model reply is kept but warned
+  about — add the category rather than let wording drift.
+- `excel.non_deductible_keywords` marks expenses that cannot be deducted (multisport,
+  food, supplements, toys). Matching rows are **kept and highlighted red**, never
+  dropped. Keyword matching runs before any API call and ignores case and Polish
+  diacritics (including `ł`, which NFKD does not decompose).
+- `load_records` **deduplicates by invoice identity**. The same invoice legitimately
+  lands on disk twice (`..., ksef.pdf` plus a separately renamed copy); reporting both
+  double-counts the cost. Duplicates are dropped (they carry no information) and logged.
 - **The KSeF number is not in the FA(3) XML.** It is assigned by KSeF and returned in
   metadata, so `ksef` records it in a `ksef-numbers.json` manifest per month, keyed by
   invoice identity (seller NIP + invoice number + issue date) so `rename` cannot orphan
