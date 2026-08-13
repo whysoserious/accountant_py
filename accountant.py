@@ -38,6 +38,103 @@ def _previous_month(today=None) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def all_command(args: argparse.Namespace) -> int:
+    """
+    Run the whole monthly routine: download, rename, repair, report.
+
+    The month is resolved once here and passed to every step explicitly. The
+    individual commands disagree on their defaults -- `ksef` defaults to the
+    current month while `excel` defaults to the previous one -- so a pipeline
+    relying on those defaults would download one month and report another.
+
+    Steps run in order and stop at the first failure, because each depends on
+    the one before it: there is nothing to rename until invoices are downloaded,
+    and nothing to report until they are renamed.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 if every step succeeded)
+    """
+    month = args.month or _previous_month()
+    directory = args.directory
+
+    steps = []
+
+    if not args.skip_download:
+        steps.append(
+            (
+                "Download from KSeF",
+                ksef_command,
+                argparse.Namespace(
+                    config=args.config,
+                    log_level=args.log_level,
+                    role=args.role,
+                    month=month,
+                    bulk=args.bulk,
+                ),
+            )
+        )
+
+    steps += [
+        (
+            "Rename and index",
+            rename_command,
+            argparse.Namespace(
+                config=args.config,
+                log_level=args.log_level,
+                files=None,
+                directory=directory or _default_directory(args.config),
+            ),
+        ),
+        (
+            "Repair missing PDFs",
+            render_command,
+            argparse.Namespace(
+                config=args.config,
+                log_level=args.log_level,
+                directory=directory,
+            ),
+        ),
+        (
+            "Build Excel report",
+            excel_command,
+            argparse.Namespace(
+                config=args.config,
+                log_level=args.log_level,
+                month=month,
+                directory=directory,
+                role=args.role,
+                output=args.output,
+                no_ai=args.no_ai,
+            ),
+        ),
+    ]
+
+    total = len(steps)
+    print(f"\nRunning the full monthly routine for {month} ({total} steps)\n")
+
+    for index, (name, handler, step_args) in enumerate(steps, start=1):
+        print(f"{'=' * 70}\n  Step {index}/{total}: {name}\n{'=' * 70}")
+        exit_code = handler(step_args)
+        if exit_code != 0:
+            print(
+                f"\nStep {index}/{total} ({name}) failed with exit code {exit_code}. "
+                f"Stopping -- the remaining steps depend on it.",
+                file=sys.stderr,
+            )
+            return exit_code
+
+    print(f"\n{'=' * 70}\n  Done: all {total} steps completed for {month}\n{'=' * 70}\n")
+    return 0
+
+
+def _default_directory(config_path: str) -> str:
+    """Read the configured invoice directory, for steps that require it."""
+    return load_config(config_path).output.main_directory
+
+
 def render_command(args: argparse.Namespace) -> int:
     """
     Render a PDF beside every invoice XML that is missing one.
@@ -450,6 +547,12 @@ Examples:
 
   # Build it without spending API calls on descriptions
   python3 accountant.py excel --month 2026-06 --no-ai
+
+  # The whole monthly routine in one command: download, rename, repair, report
+  python3 accountant.py all --month 2026-06
+
+  # Same, but reuse invoices already on disk instead of re-downloading
+  python3 accountant.py all --month 2026-06 --skip-download
         """,
     )
 
@@ -561,6 +664,51 @@ Examples:
         help="Directory to scan for invoice XML (default: output.main_directory from config)",
     )
 
+    # All command -- the whole monthly routine in one go
+    all_parser = subparsers.add_parser(
+        "all",
+        help="Run the whole routine: KSeF download, rename, repair PDFs, build the report",
+    )
+    all_parser.add_argument(
+        "--month",
+        type=str,
+        default=None,
+        help="Month to process in YYYY-MM format (default: previous month, used by every step)",
+    )
+    all_parser.add_argument(
+        "--role",
+        choices=["buyer", "seller"],
+        default="buyer",
+        help="buyer for purchase invoices, seller for sales (default: buyer)",
+    )
+    all_parser.add_argument(
+        "--directory",
+        "-d",
+        default=None,
+        help="Invoice directory (default: output.main_directory from config)",
+    )
+    all_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Path for the .xlsx file (default: <directory>/output/ksef-<month>.xlsx)",
+    )
+    all_parser.add_argument(
+        "--no-ai",
+        action="store_true",
+        help="Leave the description column empty instead of classifying expenses",
+    )
+    all_parser.add_argument(
+        "--bulk",
+        action="store_true",
+        help="Use the KSeF bulk export endpoint for the download step",
+    )
+    all_parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Start from the rename step, using invoices already on disk",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -586,6 +734,8 @@ Examples:
         exit_code = excel_command(args)
     elif args.command == "render":
         exit_code = render_command(args)
+    elif args.command == "all":
+        exit_code = all_command(args)
     else:
         parser.print_help()
         exit_code = 1

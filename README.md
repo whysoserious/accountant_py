@@ -110,6 +110,10 @@ uv run python accountant.py ksef --role buyer --month 2026-02 --bulk
 uv run python accountant.py rename --directory ./invoices
 uv run python accountant.py rename --files invoice1.pdf invoice2.pdf
 
+# Everything at once: download, rename, repair, report
+uv run python accountant.py all --month 2026-06
+uv run python accountant.py all --month 2026-06 --skip-download
+
 # Repair invoices whose PDF failed to render (offline, no KSeF query)
 uv run python accountant.py render
 
@@ -161,11 +165,24 @@ uv add --dev some-dev-tool
 
 ## Monthly workflow
 
+One command does the whole routine — download, rename, repair missing PDFs, build the report:
+
+```bash
+uv run python accountant.py all --month 2026-06
+```
+
+Or run the steps individually:
+
 ```bash
 uv run python accountant.py ksef   --role buyer --month 2026-06  # 1. download
 uv run python accountant.py rename --directory ./invoices        # 2. rename and index
-uv run python accountant.py excel  --month 2026-06               # 3. build the .xlsx
+uv run python accountant.py render                               # 3. repair missing PDFs
+uv run python accountant.py excel  --month 2026-06               # 4. build the .xlsx
 ```
+
+`all` resolves the month once and passes it to every step, and stops at the first
+failure. Add `--skip-download` to reuse invoices already on disk, or `--no-ai` to
+skip expense classification.
 
 Step 3 reads the FA(3) XML sidecars already on disk — it never queries KSeF, so it
 is offline, repeatable, and can regenerate any past month. Add `--no-ai` to skip

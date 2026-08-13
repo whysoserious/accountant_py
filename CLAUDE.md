@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Rename invoices: `uv run python accountant.py rename --directory ./invoices`
 - Build accountant Excel report: `uv run python accountant.py excel --month 2026-06`
 - Repair missing invoice PDFs: `uv run python accountant.py render` (offline, no KSeF query)
+- **Whole monthly routine in one go**: `uv run python accountant.py all --month 2026-06`
 - Compile check: `uv run python -m py_compile accountant.py && echo "OK"`
 - Run tests: `uv run pytest`
 - Format code: `uv run black .`
@@ -20,7 +21,8 @@ pull request. Run all three locally before pushing; the lint job gates the test
 matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 
 ## Architecture
-- `accountant.py` - Main entry point with CLI subcommands (download, ksef, rename, excel, render)
+- `accountant.py` - Main entry point with CLI subcommands (download, ksef, rename, excel,
+  render, all)
 - `config_parser.py` - YAML config parsing into dataclasses
 - `imap_client.py` - IMAP email connection and attachment extraction
 - `attachment_processor.py` - Claude API-based NIP checking, blacklist filtering
@@ -60,6 +62,10 @@ matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 - `save_invoices` is **idempotent**: an invoice already on disk (matched on identity, not
   filename) is not written again, but its KSeF number is still recorded. Re-running a
   month to backfill numbers is therefore safe and does not create duplicates.
+- `all` chains ksef → rename → render → excel. It resolves the month **once** and passes
+  it to every step: `ksef` alone defaults to the current month while `excel` defaults to
+  the previous one, so a pipeline trusting those defaults would download one month and
+  report another. Steps stop at the first failure, since each depends on the previous.
 - **No real invoice data in the repository.** Test fixtures use invented names and
   synthetic checksum-valid NIPs. Generated `.xlsx` files are gitignored.
 
