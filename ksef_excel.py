@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -70,16 +71,61 @@ HEADER_FILL_GENERATED = "7F6000"
 HEADER_FONT_COLOUR = "FFFFFF"
 HEADER_ROW_HEIGHT = 32
 
-DESCRIPTION_PROMPT = """Jesteś księgowym. Na podstawie danych faktury zakupowej napisz
-krótkie uzasadnienie, czego dotyczy wydatek w działalności gospodarczej — tak, aby
-posłużyło jako podstawa odliczenia podatkowego.
+# Non-deductible rows stay in the sheet, so they need to be impossible to miss.
+NON_DEDUCTIBLE_FONT_COLOUR = "9C0006"
+NON_DEDUCTIBLE_FILL = "FFC7CE"
+
+# The accountant wants a short, repeatable label -- not a justification. A fixed
+# taxonomy means the same kind of expense gets the same wording every month, so
+# the column can be sorted and filtered. Override in config under `excel:`.
+DEFAULT_CATEGORIES = [
+    "paliwo",
+    "usługa telekomunikacyjna",
+    "meble biurowe",
+    "elektronika do pracy",
+    "rata leasingowa za sprzęt",
+    "naprawy i utrzymanie samochodu",
+    "wynajem przestrzeni biurowej",
+    "materiały fotograficzne/poligraficzne",
+    "narzędzia i materiały biurowe",
+    "obsługa księgowa działalności",
+    "usługi związane z wynajmem statku powietrznego",
+]
+
+# Expenses that cannot be a cost of earning revenue. Matched against the
+# counterparty name and the line items, diacritic-insensitively.
+DEFAULT_NON_DEDUCTIBLE_KEYWORDS = [
+    "multisport",
+    "benefit systems",
+    "karta sportowa",
+    "jedzenie",
+    "catering",
+    "restauracja",
+    "posiłek",
+    "odżywka",
+    "suplement",
+    "zabawka",
+]
+
+DEFAULT_NON_DEDUCTIBLE_LABEL = "NIE PODLEGA ODLICZENIU"
+
+DESCRIPTION_PROMPT = """Jesteś księgowym. Zaklasyfikuj wydatek z faktury zakupowej.
 
 Kontrahent: {counterparty}
 Kwoty: netto {net}, VAT {vat}, brutto {gross} {currency}
 Pozycje na fakturze:
 {positions}
 
-Odpowiedz jednym zdaniem po polsku, bez wstępu i bez cudzysłowów. Maksymalnie 200 znaków."""
+Dozwolone kategorie — wybierz dokładnie jedną i przepisz ją bez żadnych zmian:
+{categories}
+
+Jeżeli wydatek nie może stanowić kosztu uzyskania przychodu (np. karty sportowe
+i świadczenia pozapłacowe, wyżywienie, suplementy, zabawki, wydatki prywatne),
+odpowiedz dokładnie tym oznaczeniem:
+{non_deductible_label}
+
+Odpowiedz wyłącznie jedną linią: nazwą kategorii albo powyższym oznaczeniem.
+Bez wstępu, bez cudzysłowów, bez wyjaśnień."""
 
 
 @dataclass
@@ -126,6 +172,10 @@ class InvoiceRecord:
     description: str = ""
     filename: str = ""
     positions: List[InvoicePosition] = field(default_factory=list)
+    # False when the expense cannot be a cost of earning revenue. The row is
+    # kept and labelled rather than dropped, so nothing silently disappears
+    # from the accountant's file.
+    deductible: bool = True
 
 
 def _local_name(tag: str) -> str:
@@ -159,6 +209,78 @@ def _text(element: Optional[ET.Element], name: str) -> str:
     if found is None or found.text is None:
         return ""
     return found.text.strip()
+
+
+# Unicode decomposition handles ą, ć, ę, ń, ó, ś, ź and ż, but NOT ł: U+0142 is
+# a distinct letter with a stroke, not a base letter plus a combining mark, so it
+# survives NFKD untouched. Without this mapping "posiłek" would never match
+# "posilek", nor "usługa" match "usluga".
+_STROKE_LETTERS = str.maketrans({"ł": "l", "Ł": "l"})
+
+
+def strip_diacritics(text: str) -> str:
+    """
+    Lowercase and remove Polish diacritics for tolerant keyword matching.
+
+    Invoice text arrives both ways -- "odżywka" and "odzywka" -- so matching on
+    the raw string would miss half the cases.
+    """
+    decomposed = unicodedata.normalize("NFKD", text.lower().translate(_STROKE_LETTERS))
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def match_non_deductible(record: "InvoiceRecord", keywords: List[str]) -> Optional[str]:
+    """
+    Return the first keyword marking this invoice as non-deductible, or None.
+
+    Searches the counterparty name and every line item, since a sports-card
+    charge may be identifiable from either the supplier or the item text.
+    """
+    if not keywords:
+        return None
+
+    haystack = strip_diacritics(
+        " ".join([record.counterparty] + [p.name for p in record.positions])
+    )
+    for keyword in keywords:
+        if strip_diacritics(keyword) in haystack:
+            return keyword
+    return None
+
+
+def mark_non_deductible(
+    records: List["InvoiceRecord"],
+    keywords: List[str],
+    label: str = DEFAULT_NON_DEDUCTIBLE_LABEL,
+    logger: Optional[logging.Logger] = None,
+) -> int:
+    """
+    Label every keyword-matched invoice as non-deductible. Returns the count.
+
+    Runs before any API call, so it works under ``--no-ai`` too and costs
+    nothing for the cases a keyword can settle.
+    """
+    log = logger or logging.getLogger(__name__)
+    marked = 0
+
+    for record in records:
+        keyword = match_non_deductible(record, keywords)
+        if keyword is None:
+            continue
+        record.deductible = False
+        record.description = label
+        marked += 1
+        log.info(
+            f"Non-deductible: {record.document_number or '(no number)'} "
+            f"from {record.counterparty or 'unknown'} (matched '{keyword}')"
+        )
+
+    if marked:
+        log.warning(
+            f"{marked} invoice(s) marked '{label}'. They stay in the report so "
+            f"nothing disappears -- exclude them when totalling."
+        )
+    return marked
 
 
 def _is_numeric_rate(rate: str) -> bool:
@@ -391,6 +513,75 @@ def _resolve_filename(xml_path: str, log: logging.Logger) -> str:
     return os.path.basename(xml_path)
 
 
+def _dedup_rank(record: "InvoiceRecord") -> tuple:
+    """
+    Rank copies of the same invoice so the most useful one is kept.
+
+    A resolved KSeF number matters most, then having a real PDF rather than only
+    an XML. The filename is a final tie-break so the choice is deterministic.
+    """
+    return (
+        bool(record.ksef_number),
+        record.filename.lower().endswith(".pdf"),
+        record.filename,
+    )
+
+
+def deduplicate(
+    records: List["InvoiceRecord"], logger: Optional[logging.Logger] = None
+) -> List["InvoiceRecord"]:
+    """
+    Collapse copies of the same invoice, keyed on invoice identity.
+
+    The same invoice legitimately lands on disk more than once -- downloaded
+    from KSeF as ``..., ksef.pdf`` and again as a separately renamed copy -- and
+    both files parse to the same invoice. Reporting both double-counts the cost,
+    so the totals the accountant sums would be wrong.
+
+    Unlike a non-deductible expense, a duplicate carries no information, so it is
+    removed rather than labelled. Every drop is logged with both filenames.
+
+    Invoices with no document number are never merged: an empty key would
+    collapse unrelated invoices into one.
+    """
+    log = logger or logging.getLogger(__name__)
+
+    best: Dict[str, InvoiceRecord] = {}
+    unkeyed: List[InvoiceRecord] = []
+    dropped = 0
+
+    for record in records:
+        if not record.document_number:
+            unkeyed.append(record)
+            continue
+
+        key = manifest_key(record.seller_nip, record.document_number, record.issue_date)
+        incumbent = best.get(key)
+        if incumbent is None:
+            best[key] = record
+            continue
+
+        dropped += 1
+        winner, loser = (
+            (record, incumbent)
+            if _dedup_rank(record) > _dedup_rank(incumbent)
+            else (incumbent, record)
+        )
+        best[key] = winner
+        log.info(
+            f"Duplicate of {record.document_number}: keeping "
+            f"'{winner.filename}', dropping '{loser.filename}'"
+        )
+
+    if dropped:
+        log.warning(
+            f"{dropped} duplicate row(s) removed. Reporting them would have "
+            f"double-counted those invoices in the accountant's totals."
+        )
+
+    return list(best.values()) + unkeyed
+
+
 def load_records(
     directory: str,
     role: str = "buyer",
@@ -466,6 +657,8 @@ def load_records(
         )
         records.append(record)
 
+    # Deduplicate after resolution, so the copy with a KSeF number can win.
+    records = deduplicate(records, logger=log)
     records.sort(key=lambda r: (r.issue_date, r.document_number))
 
     log.info(
@@ -544,7 +737,13 @@ def build_workbook(records: List[InvoiceRecord]):
         for column in MONEY_COLUMNS:
             sheet.cell(row, column).number_format = MONEY_FORMAT
         sheet.cell(row, POZYCJE_COLUMN).alignment = Alignment(wrap_text=True, vertical="top")
-        sheet.cell(row, DESCRIPTION_COLUMN).alignment = Alignment(wrap_text=True, vertical="top")
+        description_cell = sheet.cell(row, DESCRIPTION_COLUMN)
+        description_cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        if not record.deductible:
+            # The row is deliberately kept, so make it unmistakable instead.
+            description_cell.font = Font(bold=True, color=NON_DEDUCTIBLE_FONT_COLOUR)
+            description_cell.fill = PatternFill("solid", fgColor=NON_DEDUCTIBLE_FILL)
 
     widths = [14, 34, 40, 20, 16, 12, 12, 12, 8, 46, 44, 60]
     for index, width in enumerate(widths, start=1):
@@ -561,17 +760,36 @@ def write_report(records: List[InvoiceRecord], path: str) -> None:
     build_workbook(records).save(path)
 
 
+def _canonical_category(reply: str, categories: List[str]) -> Optional[str]:
+    """Map a model reply onto the configured category with that exact wording."""
+    normalized = strip_diacritics(reply.strip())
+    for category in categories:
+        if strip_diacritics(category) == normalized:
+            return category
+    return None
+
+
 def describe_invoices(
     records: List[InvoiceRecord],
     client,
     logger: logging.Logger,
     model: str = CLAUDE_SONNET_MODEL,
+    categories: Optional[List[str]] = None,
+    non_deductible_label: str = DEFAULT_NON_DEDUCTIBLE_LABEL,
+    prompt_template: str = DESCRIPTION_PROMPT,
 ) -> None:
     """
-    Fill each record's ``description`` with a tax-deduction rationale.
+    Classify each invoice into one of ``categories``, or mark it non-deductible.
 
     Sends only the counterparty, line items, and totals -- deliberately not the
     full XML, which carries more than the task requires.
+
+    Records already marked non-deductible by keyword are skipped, so the cheap
+    deterministic check is never paid for twice.
+
+    A reply outside the configured list is kept rather than discarded, but logged
+    as a warning: losing the classification would be worse than an off-list
+    label, and the warning tells you which category to add.
 
     Failures are per-row: a failed call leaves that description empty, logs a
     warning, and never aborts the remaining invoices.
@@ -580,22 +798,36 @@ def describe_invoices(
     so on a busy month it is the slowest step by far -- without a line per item
     it is indistinguishable from a hang.
     """
+    allowed = list(categories or DEFAULT_CATEGORIES)
     total = len(records)
     failures = 0
+    off_list = 0
+    skipped = 0
 
     for index, record in enumerate(records, start=1):
         label = f"[{index}/{total}]"
+
+        if not record.deductible:
+            skipped += 1
+            logger.info(
+                f"{label} Skipping {record.document_number or '(no number)'} "
+                f"-- already marked {record.description}"
+            )
+            continue
+
         logger.info(
-            f"{label} Describing {record.document_number or '(no number)'} "
+            f"{label} Classifying {record.document_number or '(no number)'} "
             f"from {record.counterparty or 'unknown'}"
         )
-        prompt = DESCRIPTION_PROMPT.format(
+        prompt = prompt_template.format(
             counterparty=record.counterparty or "nieznany",
             net=_format_money(record.net),
             vat=_format_money(record.vat),
             gross=_format_money(record.gross),
             currency=record.currency or "PLN",
             positions=format_positions(record.positions) or "(brak pozycji)",
+            categories="\n".join(f"- {c}" for c in allowed),
+            non_deductible_label=non_deductible_label,
         )
         try:
             message = client.messages.create(
@@ -604,14 +836,38 @@ def describe_invoices(
                 temperature=DEFAULT_TEMPERATURE,
                 messages=[{"role": "user", "content": prompt}],
             )
-            record.description = message.content[0].text.strip()
-            logger.info(f"{label} -> {record.description}")
+            reply = message.content[0].text.strip()
         except Exception as e:
             # Deliberately broad: an SDK, network, or content error on one
             # invoice must not cost the rest of the report.
             failures += 1
-            logger.warning(f"{label} Description failed for '{record.document_number}': {e}")
+            logger.warning(f"{label} Classification failed for '{record.document_number}': {e}")
             record.description = ""
+            continue
+
+        if strip_diacritics(reply) == strip_diacritics(non_deductible_label):
+            record.deductible = False
+            record.description = non_deductible_label
+            logger.warning(
+                f"{label} -> {non_deductible_label} "
+                f"({record.counterparty or 'unknown'}); consider adding a keyword"
+            )
+            continue
+
+        canonical = _canonical_category(reply, allowed)
+        if canonical:
+            record.description = canonical
+            logger.info(f"{label} -> {canonical}")
+        else:
+            off_list += 1
+            record.description = reply
+            logger.warning(
+                f"{label} -> '{reply}' is not in the configured categories; "
+                f"kept as-is. Add it under excel.categories to make it stable."
+            )
 
     if total:
-        logger.info(f"Descriptions complete: {total - failures} written, {failures} failed.")
+        logger.info(
+            f"Classification complete: {total - failures - skipped} written, "
+            f"{skipped} pre-marked, {off_list} off-list, {failures} failed."
+        )

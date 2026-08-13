@@ -12,7 +12,13 @@ from imap_client import IMAPClient
 from attachment_processor import AttachmentProcessor, ProcessResult
 from invoice_renamer import InvoiceRenamer
 from ksef_client import KSeFClient, KSeFConfig as KSeFClientConfig
-from ksef_excel import describe_invoices, filter_by_month, load_records, write_report
+from ksef_excel import (
+    describe_invoices,
+    filter_by_month,
+    load_records,
+    mark_non_deductible,
+    write_report,
+)
 from logger_util import setup_logger, create_download_report
 
 
@@ -67,14 +73,31 @@ def excel_command(args: argparse.Namespace) -> int:
 
         logger.info(f"{len(records)} invoice(s) in scope for {month}")
 
+        # Keyword matching runs first and always: it is free, deterministic, and
+        # works under --no-ai, so the model is never asked about a case a
+        # keyword already settles.
+        mark_non_deductible(
+            records,
+            config.excel.non_deductible_keywords,
+            label=config.excel.non_deductible_label,
+            logger=logger,
+        )
+
         if args.no_ai:
             logger.info("Skipping description generation (--no-ai).")
         else:
             import anthropic
 
             client = anthropic.Anthropic(api_key=config.api_key)
-            logger.info("Generating invoice descriptions...")
-            describe_invoices(records, client, logger)
+            logger.info("Classifying invoices...")
+            describe_invoices(
+                records,
+                client,
+                logger,
+                categories=config.excel.categories,
+                non_deductible_label=config.excel.non_deductible_label,
+                prompt_template=config.excel.description_prompt,
+            )
 
         output_path = args.output or os.path.join(directory, "output", f"ksef-{month}.xlsx")
         write_report(records, output_path)

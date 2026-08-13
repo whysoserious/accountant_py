@@ -182,9 +182,17 @@ description generation and spend no API calls.
 - **✨ Auto-rename**: Extracts date, company, invoice number from PDFs and writes renamed copies into `<directory>/output/` (the source directory is left with originals only)
 - **📊 Excel report for the accountant**: `excel` builds one `.xlsx` per month with a row
   per invoice — NIP, counterparty, KSeF number, document number, date, net/VAT/gross as
-  summable numbers, currency, an AI-written tax-deduction rationale, the local filename,
-  and every line item flattened into one cell. Generated workbooks are gitignored because
-  they contain real counterparty data.
+  summable numbers, currency, an expense category, the local filename, and every line item
+  flattened into one cell. Duplicate copies of the same invoice are collapsed so totals
+  aren't double-counted. Generated workbooks are gitignored because they contain real
+  counterparty data.
+- **🏷️ Consistent expense categories**: the description column is drawn from a fixed list
+  in `excel.categories`, so the same kind of expense reads the same way every month and
+  the column can be sorted and filtered.
+- **⛔ Non-deductible flagging**: expenses that can't be a cost of earning revenue
+  (sports cards, meals, supplements, toys) are matched by keyword before any API call and
+  labelled `NIE PODLEGA ODLICZENIU` in red. The rows stay in the report — nothing
+  disappears silently — so you exclude them when totalling.
 - **🔄 Deduplication** (runs during `rename`, destructive to the source directory):
   - **Byte-identical dupes**: source PDFs are grouped by SHA256 before renaming; for each group only one copy is kept, the rest are deleted. Source PDFs whose hash already matches a file in `output/` are also deleted.
   - **Logical dupes**: after Claude extracts invoice metadata, files matching an already-processed `(company, invoice_number)` pair are skipped and the source PDF is deleted.
