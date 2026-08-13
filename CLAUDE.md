@@ -42,7 +42,9 @@ matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 - Deduplication by invoice number (from filename) and file checksum (SHA256)
 - Blacklist filtering: PDFs matching keywords in `filter.blacklist_keywords` are skipped before LLM
 - Claude models: claude-sonnet-4-6 (NIP check, categorization), claude-haiku-4-5 (NIP extraction)
-- KSeF auth: token-based via ksef2 library, XML→PDF rendering done locally
+- KSeF auth: token-based via ksef2 library, XML→PDF rendering done locally. Requests are
+  paced ~7s apart; on 429 the client waits, and on 401 it **re-authenticates once and
+  retries** — a busy month's paced download can outlive the session.
 - Excel report: 12 columns (the accountant's 10, then `Nazwa pliku` and `pozycje`).
   Built from local XML only — never queries KSeF. `--no-ai` skips description generation.
 - Description column uses a **fixed taxonomy** from `excel.categories`, so the same

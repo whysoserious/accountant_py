@@ -3,6 +3,8 @@
 
 import os
 
+import pytest
+
 from ksef_client import KSeFClient
 
 from ksef_excel import MANIFEST_FILENAME
@@ -197,3 +199,91 @@ class TestSaveIsIdempotent:
 
         assert "Save gap" not in caplog.text
         assert "1 already on disk" in caplog.text
+
+
+class TestSessionRecovery:
+    """
+    A paced download of a busy month can outlive the KSeF session. Observed in
+    practice: requests started returning 401 twenty minutes into a 42-invoice
+    month. Without recovery, every remaining invoice fails.
+    """
+
+    def client(self, logger, monkeypatch):
+        from ksef_client import KSeFClient, KSeFConfig
+
+        c = KSeFClient(KSeFConfig(nip=SELLER_NIP, token="not-a-real-token"), logger)
+        # No network, and no waiting between simulated attempts.
+        monkeypatch.setattr(c, "_throttle", lambda: None)
+        return c
+
+    def test_retries_once_after_re_authenticating(self, logger, monkeypatch):
+        from ksef2.core.exceptions import KSeFAuthError
+
+        client = self.client(logger, monkeypatch)
+        events = []
+        monkeypatch.setattr(client, "_reauthenticate", lambda: events.append("reauth"))
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise KSeFAuthError(status_code=401, message="Wymagane jest uwierzytelnienie.")
+            return b"<Faktura/>"
+
+        result = client._call_with_rate_limit_retry("download", flaky)
+
+        assert result == b"<Faktura/>"
+        assert events == ["reauth"], "the session should be refreshed exactly once"
+        assert calls["n"] == 2
+
+    def test_gives_up_on_a_second_consecutive_401(self, logger, monkeypatch):
+        """Two 401s in a row means bad credentials, not a stale session."""
+        from ksef2.core.exceptions import KSeFAuthError
+
+        client = self.client(logger, monkeypatch)
+        monkeypatch.setattr(client, "_reauthenticate", lambda: None)
+
+        def always_401():
+            raise KSeFAuthError(status_code=401, message="Unauthorized")
+
+        with pytest.raises(KSeFAuthError):
+            client._call_with_rate_limit_retry("download", always_401)
+
+    def test_a_rate_limit_is_not_treated_as_a_session_problem(self, logger, monkeypatch):
+        """Both derive from KSeFApiError but need opposite responses."""
+        from ksef2.core.exceptions import KSeFRateLimitError
+
+        client = self.client(logger, monkeypatch)
+        reauths = []
+        monkeypatch.setattr(client, "_reauthenticate", lambda: reauths.append(1))
+        monkeypatch.setattr("ksef_client.time.sleep", lambda _: None)
+
+        calls = {"n": 0}
+
+        def limited():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise KSeFRateLimitError(retry_after=1, message="Too Many Requests")
+            return "ok"
+
+        assert client._call_with_rate_limit_retry("download", limited) == "ok"
+        assert reauths == [], "a 429 must be waited out, not re-authenticated"
+
+    def test_reauthenticate_rebuilds_the_session(self, logger, monkeypatch):
+        client = self.client(logger, monkeypatch)
+        order = []
+        monkeypatch.setattr(client, "disconnect", lambda: order.append("disconnect"))
+        monkeypatch.setattr(client, "connect", lambda: order.append("connect"))
+
+        client._reauthenticate()
+
+        assert order == ["disconnect", "connect"]
+
+    def test_a_successful_call_never_re_authenticates(self, logger, monkeypatch):
+        client = self.client(logger, monkeypatch)
+        reauths = []
+        monkeypatch.setattr(client, "_reauthenticate", lambda: reauths.append(1))
+
+        assert client._call_with_rate_limit_retry("download", lambda: "fine") == "fine"
+        assert reauths == []
