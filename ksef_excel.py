@@ -681,6 +681,75 @@ def load_records(
     return records
 
 
+def render_missing_pdfs(
+    directory: str,
+    logger: Optional[logging.Logger] = None,
+    environment: str = "production",
+) -> tuple:
+    """
+    Render a PDF beside every XML that does not have one. Returns (done, failed).
+
+    Rendering happens locally from the XML already on disk, so this needs no KSeF
+    query, no token, and no network. Invoices downloaded while the renderer was
+    failing can therefore be repaired without re-downloading them.
+
+    The KSeF number is taken from the manifest when available, so a repaired PDF
+    also carries the number in its text and QR code.
+    """
+    log = logger or logging.getLogger(__name__)
+
+    if not os.path.isdir(directory):
+        log.warning(f"Directory not found: {directory}")
+        return (0, 0)
+
+    from ksef_pdf_renderer import render_invoice_pdf
+
+    manifest = load_ksef_manifest(directory, logger=log)
+    candidates = [
+        path
+        for path in sorted(glob.glob(os.path.join(directory, "**", "*.xml"), recursive=True))
+        if not os.path.exists(os.path.splitext(path)[0] + ".pdf")
+    ]
+
+    if not candidates:
+        log.info("Every invoice XML already has a rendered PDF; nothing to do.")
+        return (0, 0)
+
+    log.info(f"{len(candidates)} XML file(s) have no PDF; rendering them locally.")
+    done = failed = 0
+
+    for index, xml_path in enumerate(candidates, start=1):
+        name = os.path.basename(xml_path)
+        label = f"[{index}/{len(candidates)}]"
+        try:
+            xml_bytes = open(xml_path, "rb").read()
+            record = parse_invoice_xml(xml_bytes)
+            key = manifest_key(record.seller_nip, record.document_number, record.issue_date)
+            ksef_number = record.ksef_number or manifest.get(key, "")
+
+            pdf_bytes = render_invoice_pdf(
+                xml_bytes,
+                ksef_number=ksef_number or None,
+                seller_nip=record.seller_nip or None,
+                environment=environment,
+            )
+            with open(os.path.splitext(xml_path)[0] + ".pdf", "wb") as handle:
+                handle.write(pdf_bytes)
+
+            done += 1
+            log.info(
+                f"{label} Rendered {name}"
+                + ("" if ksef_number else " (no KSeF number available to embed)")
+            )
+        except Exception as e:
+            # One unrenderable invoice must not stop the rest.
+            failed += 1
+            log.warning(f"{label} Could not render '{name}': {e}")
+
+    log.info(f"Rendering complete: {done} written, {failed} failed.")
+    return (done, failed)
+
+
 def filter_by_month(records: List[InvoiceRecord], month: Optional[str]) -> List[InvoiceRecord]:
     """
     Keep only records issued in ``month`` (``YYYY-MM``). ``None`` keeps all.

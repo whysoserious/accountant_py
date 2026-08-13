@@ -29,6 +29,7 @@ from ksef_excel import (
     match_non_deductible,
     manifest_key,
     parse_invoice_xml,
+    render_missing_pdfs,
     write_report,
 )
 
@@ -1007,3 +1008,93 @@ class TestDeduplication:
         records = load_records(str(tmp_path), logger=logger)
 
         assert len(records) == 1, "the same invoice saved twice must yield one row"
+
+
+class TestRenderMissingPdfs:
+    """
+    Repairing a missing PDF needs no KSeF query: the XML is already on disk, so
+    invoices downloaded while the renderer was failing can be fixed offline.
+    """
+
+    def write_xml(self, directory, stem, xml_bytes=None):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{stem}.xml").write_bytes(xml_bytes or build_fa3_xml())
+
+    def test_renders_a_pdf_beside_an_orphaned_xml(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_xml(out, "orphan")
+
+        done, failed = render_missing_pdfs(str(tmp_path), logger=logger)
+
+        assert (done, failed) == (1, 0)
+        pdf = out / "orphan.pdf"
+        assert pdf.exists() and pdf.stat().st_size > 0
+
+    def test_leaves_existing_pdfs_alone(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_xml(out, "already")
+        (out / "already.pdf").write_bytes(b"%PDF-original")
+
+        done, failed = render_missing_pdfs(str(tmp_path), logger=logger)
+
+        assert (done, failed) == (0, 0)
+        assert (out / "already.pdf").read_bytes() == b"%PDF-original"
+
+    def test_embeds_the_ksef_number_from_the_manifest(self, tmp_path, logger):
+        import PyPDF2
+
+        number = synthetic_ksef_number()
+        out = tmp_path / "output"
+        self.write_xml(out, "needs-number")
+        (out / MANIFEST_FILENAME).write_text(
+            json.dumps({manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25"): number}),
+            encoding="utf-8",
+        )
+
+        render_missing_pdfs(str(tmp_path), logger=logger)
+
+        reader = PyPDF2.PdfReader(str(out / "needs-number.pdf"))
+        text = "".join((p.extract_text() or "") for p in reader.pages)
+        assert number in text, "a repaired PDF should carry the number it was given"
+
+    def test_a_repaired_pdf_makes_the_number_resolvable(self, tmp_path, logger):
+        """End to end: repair, then the report finds the number via the PDF."""
+        number = synthetic_ksef_number()
+        out = tmp_path / "output"
+        self.write_xml(out, "repaired")
+        (out / MANIFEST_FILENAME).write_text(
+            json.dumps({manifest_key(SELLER_NIP, "FS 1/2026", "2026-06-25"): number}),
+            encoding="utf-8",
+        )
+
+        render_missing_pdfs(str(tmp_path), logger=logger)
+        records = load_records(str(tmp_path), logger=logger)
+
+        assert records[0].ksef_number == number
+        assert records[0].filename.endswith(".pdf")
+
+    def test_renders_without_a_number_when_none_is_known(self, tmp_path, logger):
+        out = tmp_path / "output"
+        self.write_xml(out, "unknown")
+
+        done, failed = render_missing_pdfs(str(tmp_path), logger=logger)
+
+        assert (done, failed) == (1, 0)
+
+    def test_an_unrenderable_xml_does_not_stop_the_others(self, tmp_path, logger):
+        out = tmp_path / "output"
+        (out).mkdir(parents=True)
+        (out / "broken.xml").write_bytes(b"<Faktura><unclosed>")
+        self.write_xml(out, "fine")
+
+        done, failed = render_missing_pdfs(str(tmp_path), logger=logger)
+
+        assert done == 1 and failed == 1
+        assert (out / "fine.pdf").exists()
+
+    def test_missing_directory_is_reported_not_raised(self, tmp_path, logger):
+        assert render_missing_pdfs(str(tmp_path / "absent"), logger=logger) == (0, 0)
+
+    def test_nothing_to_do_is_not_an_error(self, tmp_path, logger):
+        (tmp_path / "output").mkdir(parents=True)
+        assert render_missing_pdfs(str(tmp_path), logger=logger) == (0, 0)

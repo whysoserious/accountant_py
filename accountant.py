@@ -17,6 +17,7 @@ from ksef_excel import (
     filter_by_month,
     load_records,
     mark_non_deductible,
+    render_missing_pdfs,
     write_report,
 )
 from logger_util import setup_logger, create_download_report
@@ -35,6 +36,48 @@ def _previous_month(today=None) -> str:
     today = today or date.today()
     year, month = (today.year - 1, 12) if today.month == 1 else (today.year, today.month - 1)
     return f"{year:04d}-{month:02d}"
+
+
+def render_command(args: argparse.Namespace) -> int:
+    """
+    Render a PDF beside every invoice XML that is missing one.
+
+    Runs entirely offline from the XML already on disk -- no KSeF query, no
+    token, no network. Invoices saved while PDF rendering was failing can be
+    repaired without re-downloading them.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    try:
+        config = load_config(args.config)
+
+        logger = setup_logger(
+            name="accountant_render",
+            log_file=config.output.log_file,
+            level=args.log_level,
+        )
+
+        directory = args.directory or config.output.main_directory
+        environment = config.ksef.environment if config.ksef else "production"
+
+        logger.info(f"Rendering missing invoice PDFs under {directory}")
+        _, failed = render_missing_pdfs(directory, logger=logger, environment=environment)
+
+        return 0 if failed == 0 else 1
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"Could not write a rendered PDF: {e}", file=sys.stderr)
+        return 1
 
 
 def excel_command(args: argparse.Namespace) -> int:
@@ -506,6 +549,18 @@ Examples:
         help="Leave the description column empty instead of generating it",
     )
 
+    # Render command
+    render_parser = subparsers.add_parser(
+        "render",
+        help="Render missing invoice PDFs from local XML (offline, no KSeF query)",
+    )
+    render_parser.add_argument(
+        "--directory",
+        "-d",
+        default=None,
+        help="Directory to scan for invoice XML (default: output.main_directory from config)",
+    )
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -529,6 +584,8 @@ Examples:
         exit_code = rename_command(args)
     elif args.command == "excel":
         exit_code = excel_command(args)
+    elif args.command == "render":
+        exit_code = render_command(args)
     else:
         parser.print_help()
         exit_code = 1
