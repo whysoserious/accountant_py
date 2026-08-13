@@ -178,3 +178,22 @@ class TestSaveIsIdempotent:
 
         invoice_xmls = [p for p in tmp_path.glob("**/*.xml") if p.name != MANIFEST_FILENAME]
         assert len(invoice_xmls) == 2
+
+    def test_a_clean_rerun_does_not_warn_about_a_save_gap(self, tmp_path, caplog):
+        """
+        The warning exists to catch lost invoices. Firing it on every re-run,
+        where duplicates are correctly skipped, would train the reader to ignore
+        it and hide a genuine gap.
+        """
+        import logging
+
+        log = logging.getLogger("save-gap")
+        client = self.client(log)
+        xml = build_fa3_xml()
+        client.save_invoices([self.invoice(xml)], str(tmp_path))
+
+        with caplog.at_level(logging.INFO, logger="save-gap"):
+            client.save_invoices([self.invoice(xml)], str(tmp_path))
+
+        assert "Save gap" not in caplog.text
+        assert "1 already on disk" in caplog.text

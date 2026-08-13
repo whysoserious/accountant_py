@@ -509,6 +509,7 @@ class KSeFClient:
         existing = self._existing_invoice_identities(output_directory)
         if existing:
             self.logger.info(f"{len(existing)} invoice(s) already on disk will not be re-saved.")
+        skipped = 0
 
         for invoice in invoices:
             # Organize by month: output_directory/YYYY-MM/
@@ -521,6 +522,7 @@ class KSeFClient:
                 # Already downloaded. Still record the KSeF number, which is the
                 # whole reason a re-run is worth doing for older months.
                 self._record_ksef_number(month_dir, invoice)
+                skipped += 1
                 self.logger.info(
                     f"Already on disk, recorded KSeF number only: {invoice.invoice_number}"
                 )
@@ -557,11 +559,19 @@ class KSeFClient:
             self._record_ksef_number(month_dir, invoice)
             self.logger.info(f"Saved: {os.path.basename(file_path)}")
 
-        if len(saved_paths) != len(invoices):
+        # Skipped duplicates are deliberately not saved, so they must be counted
+        # here. Comparing saved files against the total would make this warning
+        # fire on every re-run, which would train the reader to ignore it and
+        # hide a genuine gap.
+        accounted = len(saved_paths) + skipped
+        if accounted != len(invoices):
             self.logger.warning(
-                f"Save gap: attempted to save {len(invoices)} invoices, "
-                f"saved {len(saved_paths)} files."
+                f"Save gap: {len(invoices)} invoice(s) downloaded, but only "
+                f"{len(saved_paths)} saved and {skipped} skipped as already on "
+                f"disk -- {len(invoices) - accounted} unaccounted for."
             )
+        elif skipped:
+            self.logger.info(f"Saved {len(saved_paths)} new invoice(s); {skipped} already on disk.")
 
         return saved_paths
 
