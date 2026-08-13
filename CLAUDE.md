@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Download invoices from KSeF: `uv run python accountant.py ksef --role buyer --month 2026-03`
 - Rename invoices: `uv run python accountant.py rename --directory ./invoices`
 - Build accountant Excel report: `uv run python accountant.py excel --month 2026-06`
+- Repair missing invoice PDFs: `uv run python accountant.py render` (offline, no KSeF query)
 - Compile check: `uv run python -m py_compile accountant.py && echo "OK"`
 - Run tests: `uv run pytest`
 - Format code: `uv run black .`
@@ -19,14 +20,15 @@ pull request. Run all three locally before pushing; the lint job gates the test
 matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
 
 ## Architecture
-- `accountant.py` - Main entry point with CLI subcommands (download, ksef, rename, excel)
+- `accountant.py` - Main entry point with CLI subcommands (download, ksef, rename, excel, render)
 - `config_parser.py` - YAML config parsing into dataclasses
 - `imap_client.py` - IMAP email connection and attachment extraction
 - `attachment_processor.py` - Claude API-based NIP checking, blacklist filtering
 - `invoice_renamer.py` - Claude API-based invoice analysis, renaming, deduplication
 - `ksef_client.py` - KSeF API client for downloading invoices (uses ksef2 library)
 - `ksef_pdf_renderer.py` - Renders KSeF FA(3) XML invoices to PDF using fpdf2
-- `ksef_excel.py` - Builds the accountant's monthly .xlsx from local FA(3) XML
+- `ksef_excel.py` - Builds the accountant's monthly .xlsx from local FA(3) XML;
+  also renders missing PDFs from local XML (`render` subcommand)
 - `tests/` - pytest suite; `tests/fixtures/synthetic.py` builds all test data
 - `logger_util.py` - Logging setup and download report generation
 - `constants.py` - Shared constants (models, file types, limits)
@@ -55,6 +57,9 @@ matrix (Python 3.12–3.14; 3.12 is the floor because `ksef2` requires it).
   metadata, so `ksef` records it in a `ksef-numbers.json` manifest per month, keyed by
   invoice identity (seller NIP + invoice number + issue date) so `rename` cannot orphan
   it. `excel` resolves it from the XML, then the manifest, then the rendered PDF's text.
+- `save_invoices` is **idempotent**: an invoice already on disk (matched on identity, not
+  filename) is not written again, but its KSeF number is still recorded. Re-running a
+  month to backfill numbers is therefore safe and does not create duplicates.
 - **No real invoice data in the repository.** Test fixtures use invented names and
   synthetic checksum-valid NIPs. Generated `.xlsx` files are gitignored.
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """KSeF (Krajowy System e-Faktur) client for downloading invoices."""
 
+import glob
 import io
 import json
 import logging
@@ -16,7 +17,7 @@ from ksef2 import Client, Environment
 from ksef2.core.exceptions import KSeFRateLimitError
 from ksef2.domain.models.pagination import InvoiceMetadataParams
 from ksef2.services.invoices import InvoicesFilter
-from ksef_excel import MANIFEST_FILENAME, manifest_key
+from ksef_excel import MANIFEST_FILENAME, manifest_key, parse_invoice_xml
 from ksef_pdf_renderer import render_invoice_pdf
 
 # KSeF API caps page_size at 100. Using the max keeps round-trips low while
@@ -502,11 +503,28 @@ class KSeFClient:
         """
         saved_paths: List[str] = []
 
+        # Re-running a month must not pile up another copy of every invoice.
+        # Before this, each run appended _1, _2, ... which is exactly how the
+        # duplicate rows in the report were created.
+        existing = self._existing_invoice_identities(output_directory)
+        if existing:
+            self.logger.info(f"{len(existing)} invoice(s) already on disk will not be re-saved.")
+
         for invoice in invoices:
             # Organize by month: output_directory/YYYY-MM/
             year_month = invoice.issue_date[:7]  # "YYYY-MM" from "YYYY-MM-DD"
             month_dir = os.path.join(output_directory, year_month)
             os.makedirs(month_dir, exist_ok=True)
+
+            identity = manifest_key(invoice.seller_nip, invoice.invoice_number, invoice.issue_date)
+            if identity in existing:
+                # Already downloaded. Still record the KSeF number, which is the
+                # whole reason a re-run is worth doing for older months.
+                self._record_ksef_number(month_dir, invoice)
+                self.logger.info(
+                    f"Already on disk, recorded KSeF number only: {invoice.invoice_number}"
+                )
+                continue
 
             safe_seller = self._sanitize(invoice.seller_name)
             safe_number = self._sanitize(invoice.invoice_number)
@@ -546,6 +564,30 @@ class KSeFClient:
             )
 
         return saved_paths
+
+    def _existing_invoice_identities(self, output_directory: str) -> set:
+        """
+        Identify every invoice already saved under ``output_directory``.
+
+        Parses the XML rather than trusting filenames, because `rename` rewrites
+        them. Unreadable files are ignored: the worst case is re-saving one
+        invoice, which is far better than refusing to save a new one.
+        """
+        identities = set()
+        if not os.path.isdir(output_directory):
+            return identities
+
+        pattern = os.path.join(output_directory, "**", "*.xml")
+        for path in glob.glob(pattern, recursive=True):
+            try:
+                record = parse_invoice_xml(open(path, "rb").read())
+            except (ValueError, OSError):
+                continue
+            if record.document_number:
+                identities.add(
+                    manifest_key(record.seller_nip, record.document_number, record.issue_date)
+                )
+        return identities
 
     def _record_ksef_number(self, month_dir: str, invoice: KSeFInvoice) -> None:
         """
