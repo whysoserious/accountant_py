@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Callable, Dict, List, Optional, TypeVar
 
 from ksef2 import Client, Environment
-from ksef2.core.exceptions import KSeFRateLimitError
+from ksef2.core.exceptions import KSeFAuthError, KSeFRateLimitError
 from ksef2.domain.models.pagination import InvoiceMetadataParams
 from ksef2.services.invoices import InvoicesFilter
 from ksef_excel import MANIFEST_FILENAME, manifest_key, parse_invoice_xml
@@ -35,6 +35,13 @@ _RATE_LIMIT_FALLBACK_SECONDS = 60
 # proactive spacing above should already keep us under the limit.
 _RATE_LIMIT_MAX_WAIT_SECONDS = 120
 _RATE_LIMIT_MAX_RETRIES = 5
+
+# A paced download of a busy month can outlive the KSeF session. Observed in
+# practice: a 42-invoice month took 20 minutes once rate-limit penalties were
+# applied, and the last requests came back 401 "Wymagane jest uwierzytelnienie".
+# One re-authentication per call is enough -- a second consecutive 401 means the
+# credentials are wrong rather than the session being stale.
+_AUTH_MAX_REAUTHS = 1
 
 T = TypeVar("T")
 
@@ -141,23 +148,55 @@ class KSeFClient:
         if wait > 0:
             time.sleep(wait)
 
+    def _reauthenticate(self) -> None:
+        """
+        Replace an expired session with a fresh one.
+
+        Callers pass closures that read ``self._auth_client`` at call time rather
+        than capturing it, so rebinding it here is picked up by the retry.
+        """
+        self.logger.info("Re-authenticating with KSeF...")
+        self.disconnect()
+        self.connect()
+
     def _call_with_rate_limit_retry(self, description: str, func: Callable[[], T]) -> T:
         """
-        Invoke a KSeF API call with proactive pacing and reactive 429 retry.
+        Invoke a KSeF API call with proactive pacing, 429 retry and 401 recovery.
 
         Proactive: enforces a minimum spacing between consecutive requests so
         bursts don't saturate the 16 req/min bucket.
 
-        Reactive: on 429, sleeps ``retry_after`` seconds (plus a buffer) and
+        Reactive on 429: sleeps ``retry_after`` seconds (plus a buffer) and
         retries up to ``_RATE_LIMIT_MAX_RETRIES`` times.
+
+        Reactive on 401: a long paced run can outlive the session, so the client
+        re-authenticates once and retries. Without this, every request after the
+        session expires fails, and a busy month can never finish.
         """
         attempt = 0
+        reauths = 0
         while True:
             self._throttle()
             try:
                 result = func()
                 self._last_request_time = time.monotonic()
                 return result
+            except KSeFAuthError as e:
+                # Checked before KSeFRateLimitError would match: both derive from
+                # KSeFApiError, but they need opposite responses -- wait versus
+                # re-authenticate.
+                self._last_request_time = time.monotonic()
+                reauths += 1
+                if reauths > _AUTH_MAX_REAUTHS:
+                    self.logger.error(
+                        f"Still unauthorised on {description} after re-authenticating; "
+                        f"giving up. Check the KSeF token."
+                    )
+                    raise
+                self.logger.warning(
+                    f"Session expired on {description} ({e}); re-authenticating and retrying."
+                )
+                self._reauthenticate()
             except KSeFRateLimitError as e:
                 self._last_request_time = time.monotonic()
                 attempt += 1
